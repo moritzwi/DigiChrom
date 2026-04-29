@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3)",
+      "Bash(xargs ls *)",
+      "Bash(python3 -c \"import pandas as pd; df = pd.read_excel\\('data/revision.xlsx', nrows=2\\); print\\(list\\(df.columns\\)\\)\")",
+      "Bash(pip3 install *)",
+      "Bash(python3 -c \"import pandas as pd; df = pd.read_excel\\('data/revision.xlsx', nrows=2\\); print\\(list\\(df.columns\\)\\); print\\(df.shape\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c \"import pytorch_tabular; print\\(pytorch_tabular.__version__\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import json; nb=json.load\\(open\\('DigiChrom_Pipeline.ipynb'\\)\\); print\\(f'Total cells: {len\\(nb[\\\\\"cells\\\\\"]\\)}'\\); [print\\(f'[{i}] {c[\\\\\"cell_type\\\\\"]}: {c[\\\\\"source\\\\\"][:80].strip\\(\\)}'\\) for i,c in enumerate\\(nb['cells']\\)]\")",
+      "Bash(python3 -)",
+      "Bash(conda run -n digichrom python3 -c ' *)",
+      "Bash(/Users/moritzwinklmair/anaconda3/envs/digichrom/bin/python -c ' *)"
+    ]
+  }
+}

@@ -1,0 +1,57 @@
+name: Build Windows Executable
+
+# Trigger: push a tag like "v1.0.0"  →  GitHub Release is created automatically
+# Manual:  Actions → "Build Windows Executable" → Run workflow
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: DigiChrom_Pipeline
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: DigiChrom_Pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller DigiChrom.spec --noconfirm
+
+      - name: Create ZIP archive
+        shell: pwsh
+        run: Compress-Archive -Path dist\DigiChrom -DestinationPath dist\DigiChrom_Windows.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DigiChrom_Windows
+          path: DigiChrom_Pipeline/dist/DigiChrom_Windows.zip
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DigiChrom_Pipeline/dist/DigiChrom_Windows.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
