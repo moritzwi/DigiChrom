@@ -1,0 +1,67 @@
+{
+  "regression": {
+    "best_model": "catboost",
+    "used_aug": false,
+    "test_metrics": {
+      "rmse": 0.12619764589805565,
+      "r2": 0.7547702103960326,
+      "mae": 0.075451196734019
+    },
+    "best_predictor_type": "ensemble:weighted",
+    "top5_shap": [
+      {
+        "feature": "Deposition time [min]",
+        "mean_abs_shap": 0.09854190108760238
+      },
+      {
+        "feature": "Current density [A/dm\u00b2]",
+        "mean_abs_shap": 0.020522838253952024
+      },
+      {
+        "feature": "Additive [mL/L]",
+        "mean_abs_shap": 0.019060520824810235
+      },
+      {
+        "feature": "Temperature [\u00b0C]",
+        "mean_abs_shap": 0.0168220219863692
+      },
+      {
+        "feature": "Bath age [Ah/L]",
+        "mean_abs_shap": 0.011613120560609574
+      }
+    ]
+  },
+  "classification": {
+    "best_model": "hist_gradient_boosting",
+    "threshold_um": 0.26537900000000003,
+    "used_aug": false,
+    "test_metrics": {
+      "accuracy": 0.8955223880597015,
+      "f1": 0.9014084507042254,
+      "auc": 0.972972972972973
+    },
+    "best_predictor_type": "ensemble:averaging",
+    "top5_shap": [
+      {
+        "feature": "Deposition time [min]",
+        "mean_abs_shap": 0.23928943358292903
+      },
+      {
+        "feature": "Additive [mL/L]",
+        "mean_abs_shap": 0.06452361295368012
+      },
+      {
+        "feature": "Temperature [\u00b0C]",
+        "mean_abs_shap": 0.05444531806138377
+      },
+      {
+        "feature": "Current density [A/dm\u00b2]",
+        "mean_abs_shap": 0.03694848725887339
+      },
+      {
+        "feature": "pH",
+        "mean_abs_shap": 0.01561697485982666
+      }
+    ]
+  }
+}
