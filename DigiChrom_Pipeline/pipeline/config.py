@@ -22,4 +22,3 @@ def get_config():
 def reset_config():
     """Reset the pipeline config to the built-in default module."""
     global _config
-    _config = _default_config
