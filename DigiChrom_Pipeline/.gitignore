@@ -1,3 +1,7 @@
+# Standortspezifische Configs (nur config_muster.py wird getrackt)
+config_*.py
+!config_muster.py
+
 # Python
 __pycache__/
 *.py[cod]
