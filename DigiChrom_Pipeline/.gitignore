@@ -28,8 +28,10 @@ data/
 *.pkl
 
 # Model outputs
-outputs/
+outputs*/
 catboost_info/
+reports/
+figures/
 
 # Environments
 .env
@@ -52,3 +54,7 @@ env/
 *.sqlite
 *.sqlite3
 optuna.log
+
+# User
+/profiles
+/models

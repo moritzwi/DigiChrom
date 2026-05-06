@@ -66,7 +66,12 @@ def feature_distributions(df: pd.DataFrame, save_path=None) -> matplotlib.figure
     axes = axes.flatten()
 
     for i, col in enumerate(cols):
-        axes[i].hist(df[col].dropna(), bins=30, edgecolor="white", color="#4C72B0")
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            counts = df[col].value_counts()
+            axes[i].bar(counts.index.astype(str), counts.values, color="#4C72B0")
+            axes[i].tick_params(axis="x", rotation=30, labelsize=7)
+        else:
+            axes[i].hist(df[col].dropna(), bins=30, edgecolor="white", color="#4C72B0")
         axes[i].set_title(col, fontsize=9)
         axes[i].set_xlabel("")
 
@@ -102,22 +107,41 @@ def target_vs_features(
     target = get_config().TARGET_COL
     feat_cols = [c for c in get_config().FEATURE_COLS if c in df.columns]
 
+    num_feat_cols = [c for c in feat_cols
+                     if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+    cat_feat_cols = [c for c in feat_cols
+                     if c in df.columns and not pd.api.types.is_numeric_dtype(df[c])]
+
+    # Rank numeric features by |Pearson r|, append categorical features after
     corr_with_target = (
-        df[feat_cols + [target]].corr()[target].drop(target).abs().sort_values(ascending=False)
+        df[num_feat_cols + [target]].corr(numeric_only=True)[target]
+        .drop(target).abs().sort_values(ascending=False)
     )
-    top_features = corr_with_target.head(top_n).index.tolist()
+    top_num = corr_with_target.head(top_n).index.tolist()
+    top_features = top_num + [c for c in cat_feat_cols if c not in top_num]
+    top_features = top_features[:top_n]
 
     ncols = 4
-    nrows = (len(top_features) + ncols - 1) // ncols
+    nrows = max(1, (len(top_features) + ncols - 1) // ncols)
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4, nrows * 3))
     axes = axes.flatten()
 
     for i, col in enumerate(top_features):
-        axes[i].scatter(df[col], df[target], alpha=0.4, s=15, color="#4C72B0")
-        axes[i].set_xlabel(col, fontsize=8)
-        axes[i].set_ylabel(target, fontsize=8)
-        r = df[[col, target]].corr().iloc[0, 1]
-        axes[i].set_title(f"r = {r:.2f}", fontsize=9)
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            # Box plot per category
+            categories = df[col].dropna().unique()
+            data = [df.loc[df[col] == cat, target].dropna().values for cat in categories]
+            axes[i].boxplot(data, labels=[str(c) for c in categories])
+            axes[i].set_xlabel(col, fontsize=8)
+            axes[i].set_ylabel(target, fontsize=8)
+            axes[i].set_title("categorical", fontsize=9)
+            axes[i].tick_params(axis="x", rotation=30, labelsize=7)
+        else:
+            axes[i].scatter(df[col], df[target], alpha=0.4, s=15, color="#4C72B0")
+            axes[i].set_xlabel(col, fontsize=8)
+            axes[i].set_ylabel(target, fontsize=8)
+            r = df[[col, target]].corr(numeric_only=True).iloc[0, 1]
+            axes[i].set_title(f"r = {r:.2f}", fontsize=9)
 
     for j in range(i + 1, len(axes)):
         axes[j].set_visible(False)

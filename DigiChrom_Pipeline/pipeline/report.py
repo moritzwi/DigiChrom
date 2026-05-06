@@ -360,12 +360,12 @@ def generate_report(
         <td class="lbl" style="padding-left:28px;">Feature</td><td class="val">{len(feature_names)}</td>
       </tr>
       <tr>
-        <td class="lbl">Zielwertbereich</td>
+        <td class="lbl">Zielwertbereich Testset</td>
         <td class="val" colspan="3">[{float(y_test.min()):.3f}, {float(y_test.max()):.3f}] µm</td>
       </tr>
 
       <tr><td colspan="4" style="padding-top:20px; font-weight:bold; font-size:10.5pt;
-              color:#4C72B0;">Bester Regressionsmodell
+              color:#4C72B0;">Bestes Regressionsmodell
           <span class="badge reg">{best_predictor_reg_type}</span></td></tr>
       <tr>
         <td class="lbl">R²</td>
@@ -380,7 +380,7 @@ def generate_report(
       </tr>
 
       <tr><td colspan="4" style="padding-top:20px; font-weight:bold; font-size:10.5pt;
-              color:#DD8452;">Bester Klassifikator
+              color:#DD8452;">Bestes Klassifikationsmodell
           <span class="badge clf">{best_predictor_clf_type}</span></td></tr>
       <tr>
         <td class="lbl">Schwellenwert</td>

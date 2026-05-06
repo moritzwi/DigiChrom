@@ -124,7 +124,7 @@ def pdp_plots(
     ncols = 4
     nrows = (len(features_to_plot) + ncols - 1) // ncols
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4, nrows * 3))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3, nrows * 2.5))
     axes = axes.flatten()
 
     PartialDependenceDisplay.from_estimator(
@@ -178,7 +178,7 @@ def permutation_importance(
         "importance_std": result.importances_std,
     }).sort_values("importance_mean", ascending=False).reset_index(drop=True)
 
-    fig, ax = plt.subplots(figsize=(8, max(4, len(feature_names) * 0.35)))
+    fig, ax = plt.subplots(figsize=(7, max(3.5, len(feature_names) * 0.28)))
     ax.barh(imp_df["feature"][::-1], imp_df["importance_mean"][::-1],
             xerr=imp_df["importance_std"][::-1], color="#4C72B0", ecolor="gray")
     ax.set_xlabel("Mean decrease in R²")
@@ -392,7 +392,7 @@ def ice_plots(
 
     ncols = min(3, len(top_idx))
     nrows = (len(top_idx) + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.5, nrows * 3.5))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 3))
     axes = np.array(axes).flatten()
 
     PartialDependenceDisplay.from_estimator(
@@ -455,7 +455,7 @@ def ale_plots(
 
     ncols = min(3, len(top_idx))
     nrows = (len(top_idx) + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.5, nrows * 3.5))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 3))
     axes = np.array(axes).flatten()
 
     for plot_i, feat_idx in enumerate(top_idx):
@@ -508,7 +508,7 @@ def shap_waterfall_plots(
     feature_names: list,
     n_samples: int = 3,
     save_path=None,
-) -> None:
+) -> list:
     """SHAP waterfall plots for individual samples (best/worst/median predictions).
 
     Args:
@@ -544,6 +544,7 @@ def shap_waterfall_plots(
     picks      = [sorted_idx[0], sorted_idx[n // 2], sorted_idx[-1]][:n_samples]
     labels     = ["Lowest prediction", "Median prediction", "Highest prediction"][:n_samples]
 
+    figs = []
     for i, (idx, lbl) in enumerate(zip(picks, labels)):
         sv_row = shap_values[idx]
         expl   = shap.Explanation(
@@ -552,76 +553,17 @@ def shap_waterfall_plots(
             data=X_scaled[idx],
             feature_names=feature_names,
         )
-        fig_wf, ax_wf = plt.subplots(figsize=(10, max(4, len(feature_names) * 0.35)))
-        plt.sca(ax_wf)
+        plt.close("all")
         shap.waterfall_plot(expl, max_display=15, show=False)
-        ax_wf.set_title(f"SHAP Waterfall — {lbl}")
+        fig_wf = plt.gcf()
+        fig_wf.suptitle(lbl, y=1.01, fontsize=10)
         plt.tight_layout()
         out = Path(str(save_path).replace(".pdf", f"_{i}.pdf"))
         fig_wf.savefig(out, bbox_inches="tight")
-        plt.close(fig_wf)
+        figs.append(fig_wf)
         print(f"[xai] Saved SHAP waterfall → {out}")
+    return figs
 
-
-def shap_dependence_plots(
-    model,
-    X_scaled: np.ndarray,
-    feature_names: list,
-    top_n: int = 6,
-    save_path=None,
-) -> None:
-    """SHAP dependence plots with automatic interaction-feature coloring.
-
-    For each of the top-N features (by mean |SHAP|), plots the feature value
-    on x vs. the SHAP value on y, colored by the feature that interacts most.
-
-    Args:
-        model: Fitted estimator.
-        X_scaled: Scaled feature matrix (numpy array).
-        feature_names: Ordered list of feature names.
-        top_n: Number of features to plot.
-        save_path: Output PDF path. Defaults to config.FIGURES_DIR / 'shap_dependence.pdf'.
-    """
-    if not _HAS_SHAP:
-        raise ImportError("shap required")
-
-    save_path = save_path or get_config().FIGURES_DIR / "shap_dependence.pdf"
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-
-    model_type = type(model).__name__.lower()
-    if any(t in model_type for t in ["catboost", "xgb", "forest", "tree", "boost", "lgb"]):
-        explainer   = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_scaled)
-    else:
-        background  = shap.sample(X_scaled, min(100, len(X_scaled)))
-        explainer   = shap.KernelExplainer(model.predict, background)
-        shap_values = explainer.shap_values(X_scaled, nsamples=100)
-
-    top_idx = list(np.argsort(np.abs(shap_values).mean(axis=0))[::-1][:top_n])
-    X_df    = pd.DataFrame(X_scaled, columns=feature_names)
-
-    ncols = min(3, len(top_idx))
-    nrows = (len(top_idx) + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.5, nrows * 3.5))
-    axes = np.array(axes).flatten()
-
-    for plot_i, feat_idx in enumerate(top_idx):
-        ax = axes[plot_i]
-        plt.sca(ax)
-        shap.dependence_plot(
-            feat_idx, shap_values, X_df,
-            interaction_index="auto", show=False, ax=ax,
-        )
-        ax.set_title(feature_names[feat_idx])
-
-    for j in range(len(top_idx), len(axes)):
-        axes[j].set_visible(False)
-
-    fig.suptitle("SHAP Dependence Plots (with interaction coloring)", fontsize=13)
-    plt.tight_layout()
-    fig.savefig(save_path, bbox_inches="tight")
-    plt.close(fig)
-    print(f"[xai] Saved SHAP dependence plots → {save_path}")
 
 
 def shap_interaction_matrix(
@@ -700,7 +642,7 @@ def shap_interaction_matrix(
     )
     np.save(get_config().REPORTS_DIR / "all_shap_interactions_raw.npy", shap_inter)
     print(f"[xai] Saved SHAP interaction CSVs → reports/")
-    return df_inter
+    return fig, df_inter
 
 
 def learning_curve_plot(
@@ -892,7 +834,7 @@ def classification_report_plot(
     y: np.ndarray,
     class_names: list = None,
     save_path=None,
-) -> pd.DataFrame:
+) -> tuple:
     """Render the per-class classification report as a heatmap and save as CSV.
 
     Args:
@@ -940,7 +882,7 @@ def classification_report_plot(
     fig.savefig(save_path, bbox_inches="tight")
     plt.close(fig)
     print(f"[xai] Saved classification report → {save_path}")
-    return df_rep
+    return fig, df_rep
 
 
 def bootstrap_ci_plot(
@@ -985,7 +927,7 @@ def bootstrap_ci_plot(
     sort_idx = np.argsort(y_true)
     r2       = float(_r2(y_true, y_pred))
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig, ax = plt.subplots(figsize=(5, 4))
     ax.fill_between(y_true[sort_idx], ci_lo[sort_idx], ci_hi[sort_idx],
                     alpha=0.2, color="#4C72B0",
                     label=f"{int((1 - ci_alpha) * 100)}% CI")
@@ -1111,7 +1053,7 @@ def shap_dependence_plots(
 
     ncols    = min(3, top_n)
     nrows    = (top_n + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 4.5, nrows * 3.5))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 3))
     axes_flat = np.array(axes).flatten() if top_n > 1 else np.array([axes])
     cmap      = "coolwarm" if task == "regression" else "RdYlGn"
 

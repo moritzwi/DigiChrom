@@ -124,6 +124,7 @@ def _objective_factory(
     y_arr: np.ndarray,
     cv_splits: list,
     aug_ratio: float = 0.0,
+    n_outputs: int = 1,
 ) -> "callable":
     """Build an Optuna objective function for the given model.
 
@@ -324,6 +325,13 @@ def _objective_factory(
         else:
             raise ValueError(f"Unknown model: {model_name}")
 
+        # Wrap with MultiOutputRegressor for models that don't support multi-output natively
+        if n_outputs > 1 and model_name in (
+            "gradient_boosting", "xgboost", "catboost", "lightgbm", "svr"
+        ):
+            from sklearn.multioutput import MultiOutputRegressor
+            model = MultiOutputRegressor(model)
+
         rmses = []
         for train_idx, val_idx in cv_splits:
             X_tr, X_val = X_arr[train_idx], X_arr[val_idx]
@@ -387,12 +395,13 @@ def tune(
 
 def tune_all(
     X: pd.DataFrame,
-    y: pd.Series,
+    y,
     n_trials: int = 100,
     save_path=None,
     force: bool = False,
     aug_ratio: float = 0.0,
     patience: int = 20,
+    n_outputs: int = 1,
 ) -> tuple:
     """Tune all non-baseline models and save results to disk.
 
@@ -464,8 +473,9 @@ def tune_all(
                 direction="minimize",
                 sampler=optuna.samplers.TPESampler(seed=get_config().RANDOM_SEED),
             )
+            y_arr = y.values if hasattr(y, "values") else np.array(y)
             study.optimize(
-                _objective_factory(name, X.values, y.values, cv_splits_shared, aug_ratio),
+                _objective_factory(name, X.values, y_arr, cv_splits_shared, aug_ratio, n_outputs),
                 n_trials=n_trials,
                 callbacks=[_EarlyStoppingCallback(patience=patience)],
                 show_progress_bar=False,
@@ -833,10 +843,11 @@ def rank_models_reg(
     best_params_reg_aug: dict,
     scores_reg_aug: dict,
     X_train: pd.DataFrame,
-    y_train: pd.Series,
+    y_train,
     cv_splits: list,
     aug_ratio: float = 0.5,
     top_n: int = 3,
+    n_outputs: int = 1,
 ) -> tuple:
     """Select orig/aug per model via HPO scores, then re-evaluate with fixed params.
 
@@ -891,7 +902,7 @@ def rank_models_reg(
                 pre = make_preprocessor()
                 X_tr_s  = pre.fit_transform(X_tr)
                 X_val_s = pre.transform(X_val)
-                model = _build_model(m, best_params[m])
+                model = _build_model(m, best_params[m], n_outputs=n_outputs)
                 model.fit(X_tr_s, y_tr)
                 preds = model.predict(X_val_s)
                 rmses.append(float(np.sqrt(mean_squared_error(y_val, preds))))
@@ -988,9 +999,10 @@ def cv_eval_ensembles_reg(
     best_params_reg: dict,
     best_data_source: dict,
     X_train: pd.DataFrame,
-    y_train: pd.Series,
+    y_train,
     cv_splits: list,
     aug_ratio: float = 0.5,
+    n_outputs: int = 1,
 ) -> pd.DataFrame:
     """CV evaluation of averaging / weighted / stacking ensembles for regression.
 
@@ -1034,7 +1046,7 @@ def cv_eval_ensembles_reg(
             pre_m     = make_preprocessor()
             X_tr_m_s  = pre_m.fit_transform(X_tr_m)
             X_val_s_m = pre_m.transform(X_val)
-            m = _build_model(mname, best_params_reg.get(mname, {}))
+            m = _build_model(mname, best_params_reg.get(mname, {}), n_outputs=n_outputs)
             m.fit(X_tr_m_s, y_tr_m)
             p = m.predict(X_val_s_m)
             base_preds_val[mname] = p
@@ -1054,7 +1066,7 @@ def cv_eval_ensembles_reg(
         pre_stk    = make_preprocessor()
         X_tr_stk_s = pre_stk.fit_transform(X_tr_raw)
         meta_X_tr  = np.column_stack([
-            _cvp(_build_model(mname, best_params_reg.get(mname, {})),
+            _cvp(_build_model(mname, best_params_reg.get(mname, {}), n_outputs=n_outputs),
                  X_tr_stk_s, y_tr_raw, cv=3)
             for mname in top_models
         ])

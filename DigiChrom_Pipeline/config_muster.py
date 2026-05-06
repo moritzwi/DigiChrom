@@ -2,12 +2,18 @@
 DigiChrom Pipeline — Konfigurationsvorlage
 ==========================================
 Kopiere diese Datei und benenne sie nach deinem Standort / Datensatz,
-z.B. config_TU_Ilmenau.py, config_HS_Aalen.py, etc.
+z.B. config_mein_Datensatz.py, config_HS_Aalen.py, etc.
 Die standortspezifischen Dateien werden von Git ignoriert.
+
+Neue Daten mit anderen Features / Target:
+    Passe TARGET_COL, FEATURE_COLS und META_COLS unten direkt an.
+    Die Pipeline liest alles über get_config() — kein weiterer Code muss
+    geändert werden, solange die Spaltennamen mit der Excel-Datei übereinstimmen.
+    Für volle Metadaten (Einheiten, Bounds für Inverse-ML) kannst du optional
+    eine eigene feature_registry_<name>.py anlegen und hier importieren.
 """
 import sys
 from pathlib import Path
-from pipeline.feature_registry import FEATURE_COLS, TARGET_COL
 
 # Pfade — bei PyInstaller-Builds landet OUTPUT_DIR im Home-Verzeichnis
 if getattr(sys, "frozen", False):
@@ -30,7 +36,62 @@ CV_FOLDS         = 5
 TEST_SIZE        = 0.15
 MISSING_SENTINEL = -999999
 
-# Spalten, die keine Features/Target sind
+# ── Features & Target ───────────────────────────────────────────────────────
+# Direkt hier anpassen — Spaltennamen müssen exakt mit der Excel-Datei übereinstimmen.
+# Die Pipeline liest ausschließlich über get_config().FEATURE_COLS / TARGET_COL.
+
+# Single-output:  TARGET_COL = "Thickness Cr [µm]"
+# Multi-output:   TARGET_COL = ["Thickness Cr [µm]", "Hardness [HV]"]
+TARGET_COL = "Thickness Cr [µm]"   # <-- Zielspalte(n) anpassen
+
+FEATURE_COLS = [
+    # Prozessparameter
+    "pH",
+    "Deposition time [min]",
+    "Temperature [°C]",
+    "Current density [A/dm²]",
+    # Badchemie
+    "Chromium [g/L]",
+    "Buffer [g/L]",
+    "Complexing agent [mL/L]",
+    "Additive [mL/L]",
+    "Supporting electrolyte [g/L]",
+    "Brigthener [mL/L]",
+    # Kontamination
+    "Nickel [mg/L]",
+    "Iron [mg/L]",
+    "Copper [mg/L]",
+    # Lebenszyklus
+    "Bath age [Ah/L]",
+    "Last reactivation [days]",
+    "Service life [days]",
+    # Geometrie
+    "Gloss Nickel layer [%]",
+    "Sample Area [dm²]",
+    "Anode Area [dm²]",
+    "Volume [L]",
+    # <-- neue Features einfach hier eintragen oder alte entfernen
+]
+
+# ── Fehlende Werte als Information ──────────────────────────────────────────
+# NaN in diesen Spalten bedeutet "Schritt wurde ausgelassen", nicht "Datenfehler".
+# Für jede Spalte wird automatisch eine binäre "<Spalte>_was_missing"-Spalte
+# erstellt (1 = fehlend/ausgelassen, 0 = vorhanden) und als Feature genutzt.
+# Die Originalspalte wird anschließend normal imputiert (Median).
+# Leer lassen oder weglassen, wenn alle NaN Datenfehler sind.
+INDICATOR_COLS = [
+    # "Duty-Cycle",
+    # "Reactivation step",
+]
+
+# ── Zensierte Messwerte ──────────────────────────────────────────────────────
+# Werte unterhalb der Nachweisgrenze (z.B. "<5") werden auf halbe Grenze gesetzt.
+# Dict: Spaltenname → Präfix-Zeichen. Leer lassen wenn nicht benötigt.
+CENSORED_COLS = {
+    # "Cr(VI)": "<",
+}
+
+# Spalten, die keine Features/Target sind (werden beim Laden ignoriert)
 META_COLS = [
     "Experiment ID",
     "Experiment",

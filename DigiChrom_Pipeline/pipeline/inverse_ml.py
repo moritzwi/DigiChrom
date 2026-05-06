@@ -109,14 +109,27 @@ def _bayesian_search(
     if not _HAS_OPTUNA:
         raise ImportError("optuna required for bayesian method")
 
+    # target may be a scalar (single output) or a list/array (multi-output)
+    target_arr = np.atleast_1d(np.array(target, dtype=float))
+    is_multi = target_arr.ndim == 1 and len(target_arr) > 1
+
     collected = []
 
     def objective(trial: "optuna.Trial") -> float:
         free_vals = {v: trial.suggest_float(v, bounds[v][0], bounds[v][1]) for v in free_vars}
         x = _build_input_vector(fixed_params, free_vals, feature_names).reshape(1, -1)
-        pred = float(model.predict(preprocessor.transform(x))[0])
-        collected.append({**free_vals, "predicted_thickness": pred, "error": abs(pred - target)})
-        return abs(pred - target)
+        raw = model.predict(preprocessor.transform(x))[0]
+        pred_arr = np.atleast_1d(np.array(raw, dtype=float))
+        error = float(np.sqrt(np.mean((pred_arr - target_arr) ** 2)))
+        row = {**free_vals}
+        if is_multi:
+            for i, p in enumerate(pred_arr):
+                row[f"predicted_{i}"] = float(p)
+        else:
+            row["predicted_thickness"] = float(pred_arr[0])
+        row["error"] = error
+        collected.append(row)
+        return error
 
     study = optuna.create_study(
         direction="minimize",
@@ -253,6 +266,7 @@ def find_inputs(
     free_vars: list,
     target_thickness: float,
     bounds: dict = None,
+    X_train=None,
     n_solutions: int = 5,
     method: str = "bayesian",
     n_trials: int = 300,
@@ -268,8 +282,10 @@ def find_inputs(
         fixed_params: Feature name → value for all non-free features.
         free_vars: Names of the 1–3 variables to optimise.
         target_thickness: Desired chromium thickness in µm.
-        bounds: Min/max bounds per free variable. Use get_bounds_from_data()
-            to derive from training data.
+        bounds: Min/max bounds per free variable. If None, derived automatically
+            from X_train.
+        X_train: Training feature DataFrame. Used to derive bounds when bounds
+            is None.
         n_solutions: Number of candidate solutions to return.
         method: Search strategy; 'bayesian' (Optuna, works for all models) or
             'gradient' (PyTorch backprop, requires TorchMLP).
@@ -280,12 +296,15 @@ def find_inputs(
         'predicted_thickness' and 'error', sorted ascending by error.
 
     Raises:
-        ValueError: If bounds is None, any free variable has no bounds, or
-            not all feature names are covered by fixed_params / free_vars.
+        ValueError: If bounds cannot be determined or any free variable is
+            missing bounds.
         ValueError: If method is not 'bayesian' or 'gradient'.
     """
     if bounds is None:
-        raise ValueError("bounds must be provided. Use get_bounds_from_data() to derive from training data.")
+        if X_train is None:
+            raise ValueError("Provide either bounds or X_train to derive bounds automatically.")
+        bounds = get_bounds_from_data(X_train, free_vars)
+        print(f"[inverse_ml] Auto-derived bounds from training data: {bounds}")
 
     missing_bounds = [v for v in free_vars if v not in bounds]
     if missing_bounds:

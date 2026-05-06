@@ -156,11 +156,12 @@ class TorchMLP(RegressorMixin, BaseEstimator):
         self.input_size_ = None
         self.device_ = None
 
-    def _build(self, n_in: int) -> "nn.Sequential":
+    def _build(self, n_in: int, n_out: int = 1) -> "nn.Sequential":
         """Build the sequential PyTorch model.
 
         Args:
             n_in: Number of input features.
+            n_out: Number of outputs (1 = single-target, >1 = multi-output).
 
         Returns:
             Constructed nn.Sequential module.
@@ -170,7 +171,7 @@ class TorchMLP(RegressorMixin, BaseEstimator):
         for h in self.hidden_sizes:
             layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(self.dropout)]
             prev = h
-        layers.append(nn.Linear(prev, 1))
+        layers.append(nn.Linear(prev, n_out))
         return nn.Sequential(*layers)
 
     def fit(self, X, y) -> "TorchMLP":
@@ -178,7 +179,7 @@ class TorchMLP(RegressorMixin, BaseEstimator):
 
         Args:
             X: Training features as numpy array or DataFrame.
-            y: Training targets as numpy array or Series.
+            y: Training targets as numpy array, Series, or DataFrame (multi-output).
 
         Returns:
             Self, for method chaining.
@@ -188,14 +189,18 @@ class TorchMLP(RegressorMixin, BaseEstimator):
         """
         if not _HAS_TORCH:
             raise ImportError("torch required for TorchMLP")
-        X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32)
-        y_t = torch.tensor(y if isinstance(y, np.ndarray) else y.values, dtype=torch.float32).unsqueeze(1)
+        y_arr = y if isinstance(y, np.ndarray) else np.array(y)
+        self.n_outputs_  = 1 if y_arr.ndim == 1 else y_arr.shape[1]
+        X_t = torch.tensor(X if isinstance(X, np.ndarray) else np.array(X), dtype=torch.float32)
+        y_t = torch.tensor(y_arr, dtype=torch.float32)
+        if y_t.ndim == 1:
+            y_t = y_t.unsqueeze(1)
         self.input_size_ = X_t.shape[1]
         self.device_ = _torch_device()
         X_t = X_t.to(self.device_)
         y_t = y_t.to(self.device_)
         torch.manual_seed(get_config().RANDOM_SEED)
-        self.model_ = self._build(self.input_size_).to(self.device_)
+        self.model_ = self._build(self.input_size_, self.n_outputs_).to(self.device_)
         optimizer = torch.optim.Adam(self.model_.parameters(), lr=self.lr)
         loss_fn = nn.MSELoss()
         dataset = torch.utils.data.TensorDataset(X_t, y_t)
@@ -226,7 +231,8 @@ class TorchMLP(RegressorMixin, BaseEstimator):
         device = self.device_ or _torch_device()
         X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32).to(device)
         with torch.no_grad():
-            return self.model_(X_t).squeeze().cpu().numpy()
+            out = self.model_(X_t).cpu().numpy()
+        return out.squeeze(axis=1) if getattr(self, "n_outputs_", 1) == 1 else out
 
     def get_params(self, deep: bool = True) -> dict:
         """Return hyperparameter dict (sklearn API).
@@ -287,7 +293,7 @@ class TabCNNRegressor(RegressorMixin, BaseEstimator):
         self.device_     = None
 
     class _Net(nn.Module):
-        def __init__(self, n_feat, n_filters, kernel_size, n_layers, dropout):
+        def __init__(self, n_feat, n_filters, kernel_size, n_layers, dropout, n_out=1):
             super().__init__()
             ks    = min(kernel_size, n_feat)
             in_ch = 1
@@ -296,25 +302,29 @@ class TabCNNRegressor(RegressorMixin, BaseEstimator):
                 layers += [nn.Conv1d(in_ch, n_filters, ks, padding=ks // 2), nn.ReLU(), nn.Dropout(dropout)]
                 in_ch = n_filters
             self.convs = nn.Sequential(*layers)
-            self.pool  = nn.AdaptiveAvgPool1d(1)   # (B, n_filters, F') → (B, n_filters, 1)
-            self.fc    = nn.Linear(n_filters, 1)
+            self.pool  = nn.AdaptiveAvgPool1d(1)
+            self.fc    = nn.Linear(n_filters, n_out)
 
         def forward(self, x):
-            x = x.unsqueeze(1)           # (B, 1, F)
-            x = self.convs(x)            # (B, n_filters, F')
-            x = self.pool(x).squeeze(-1) # (B, n_filters)
+            x = x.unsqueeze(1)
+            x = self.convs(x)
+            x = self.pool(x).squeeze(-1)
             return self.fc(x)
 
     def fit(self, X, y) -> "TabCNNRegressor":
         if not _HAS_TORCH:
             raise ImportError("torch required for TabCNNRegressor")
-        X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32)
-        y_t = torch.tensor(y if isinstance(y, np.ndarray) else y.values, dtype=torch.float32).unsqueeze(1)
+        y_arr = y if isinstance(y, np.ndarray) else np.array(y)
+        self.n_outputs_ = 1 if y_arr.ndim == 1 else y_arr.shape[1]
+        X_t = torch.tensor(X if isinstance(X, np.ndarray) else np.array(X), dtype=torch.float32)
+        y_t = torch.tensor(y_arr, dtype=torch.float32)
+        if y_t.ndim == 1:
+            y_t = y_t.unsqueeze(1)
         self.device_ = _torch_device()
         X_t, y_t     = X_t.to(self.device_), y_t.to(self.device_)
         torch.manual_seed(get_config().RANDOM_SEED)
         self.model_ = self._Net(X_t.shape[1], self.n_filters, self.kernel_size,
-                                self.n_layers, self.dropout).to(self.device_)
+                                self.n_layers, self.dropout, self.n_outputs_).to(self.device_)
         opt  = torch.optim.Adam(self.model_.parameters(), lr=self.lr)
         loss = nn.MSELoss()
         ds   = torch.utils.data.TensorDataset(X_t, y_t)
@@ -330,9 +340,10 @@ class TabCNNRegressor(RegressorMixin, BaseEstimator):
         if not _HAS_TORCH:
             raise ImportError("torch required for TabCNNRegressor")
         dev = self.device_ or _torch_device()
-        X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32).to(dev)
+        X_t = torch.tensor(X if isinstance(X, np.ndarray) else np.array(X), dtype=torch.float32).to(dev)
         with torch.no_grad():
-            return self.model_(X_t).squeeze().cpu().numpy()
+            out = self.model_(X_t).cpu().numpy()
+        return out.squeeze(axis=1) if getattr(self, "n_outputs_", 1) == 1 else out
 
     def get_params(self, deep=True):
         return dict(n_filters=self.n_filters, kernel_size=self.kernel_size,
@@ -373,7 +384,7 @@ class FTTransformerRegressor(RegressorMixin, BaseEstimator):
         self.device_    = None
 
     class _Net(nn.Module):
-        def __init__(self, n_feat, d_token, n_heads, n_layers, dropout):
+        def __init__(self, n_feat, d_token, n_heads, n_layers, dropout, n_out=1):
             super().__init__()
             # Per-feature linear tokenizer
             self.W   = nn.Parameter(torch.empty(n_feat, d_token))
@@ -386,19 +397,23 @@ class FTTransformerRegressor(RegressorMixin, BaseEstimator):
                 dim_feedforward=d_token * 4, batch_first=True, norm_first=True,
             )
             self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
-            self.head    = nn.Sequential(nn.LayerNorm(d_token), nn.Linear(d_token, 1))
+            self.head    = nn.Sequential(nn.LayerNorm(d_token), nn.Linear(d_token, n_out))
 
         def forward(self, x):
             tok = x.unsqueeze(-1) * self.W + self.b            # (B, F, d_token)
             cls = self.cls.expand(x.size(0), -1, -1)           # (B, 1, d_token)
             out = self.encoder(torch.cat([cls, tok], dim=1))   # (B, F+1, d_token)
-            return self.head(out[:, 0, :])                      # CLS → scalar
+            return self.head(out[:, 0, :])                      # CLS → (B, n_out)
 
     def fit(self, X, y) -> "FTTransformerRegressor":
         if not _HAS_TORCH:
             raise ImportError("torch required for FTTransformerRegressor")
+        y_arr = y if isinstance(y, np.ndarray) else np.array(y)
+        self.n_outputs_ = 1 if y_arr.ndim == 1 else y_arr.shape[1]
         X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32)
-        y_t = torch.tensor(y if isinstance(y, np.ndarray) else y.values, dtype=torch.float32).unsqueeze(1)
+        y_t = torch.tensor(y_arr, dtype=torch.float32)
+        if y_t.ndim == 1:
+            y_t = y_t.unsqueeze(1)
         self.device_ = _torch_device()
         X_t, y_t     = X_t.to(self.device_), y_t.to(self.device_)
         n_heads_eff  = max(1, min(self.n_heads, self.d_token))
@@ -406,7 +421,7 @@ class FTTransformerRegressor(RegressorMixin, BaseEstimator):
             n_heads_eff -= 1
         torch.manual_seed(get_config().RANDOM_SEED)
         self.model_ = self._Net(X_t.shape[1], self.d_token, n_heads_eff,
-                                self.n_layers, self.dropout).to(self.device_)
+                                self.n_layers, self.dropout, self.n_outputs_).to(self.device_)
         opt  = torch.optim.Adam(self.model_.parameters(), lr=self.lr, weight_decay=1e-5)
         loss = nn.MSELoss()
         ds   = torch.utils.data.TensorDataset(X_t, y_t)
@@ -424,7 +439,8 @@ class FTTransformerRegressor(RegressorMixin, BaseEstimator):
         dev = self.device_ or _torch_device()
         X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32).to(dev)
         with torch.no_grad():
-            return self.model_(X_t).squeeze().cpu().numpy()
+            out = self.model_(X_t).cpu().numpy()
+        return out.squeeze(axis=1) if getattr(self, "n_outputs_", 1) == 1 else out
 
     def get_params(self, deep=True):
         return dict(d_token=self.d_token, n_heads=self.n_heads, n_layers=self.n_layers,
@@ -463,7 +479,7 @@ class SAINTRegressor(RegressorMixin, BaseEstimator):
         self.device_    = None
 
     class _Net(nn.Module):
-        def __init__(self, n_feat, d_token, n_heads, n_layers, dropout):
+        def __init__(self, n_feat, d_token, n_heads, n_layers, dropout, n_out=1):
             super().__init__()
             self.W   = nn.Parameter(torch.empty(n_feat, d_token))
             self.b   = nn.Parameter(torch.zeros(n_feat, d_token))
@@ -479,7 +495,7 @@ class SAINTRegressor(RegressorMixin, BaseEstimator):
                                       dropout=dropout, batch_first=True)
                 for _ in range(n_layers)
             ])
-            self.head = nn.Sequential(nn.LayerNorm(n_feat * d_token), nn.Linear(n_feat * d_token, 1))
+            self.head = nn.Sequential(nn.LayerNorm(n_feat * d_token), nn.Linear(n_feat * d_token, n_out))
 
         def forward(self, x):
             # x: (B, F)
@@ -495,8 +511,12 @@ class SAINTRegressor(RegressorMixin, BaseEstimator):
     def fit(self, X, y) -> "SAINTRegressor":
         if not _HAS_TORCH:
             raise ImportError("torch required for SAINTRegressor")
+        y_arr = y if isinstance(y, np.ndarray) else np.array(y)
+        self.n_outputs_ = 1 if y_arr.ndim == 1 else y_arr.shape[1]
         X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32)
-        y_t = torch.tensor(y if isinstance(y, np.ndarray) else y.values, dtype=torch.float32).unsqueeze(1)
+        y_t = torch.tensor(y_arr, dtype=torch.float32)
+        if y_t.ndim == 1:
+            y_t = y_t.unsqueeze(1)
         self.device_ = _torch_device()
         X_t, y_t     = X_t.to(self.device_), y_t.to(self.device_)
         n_heads_eff  = max(1, min(self.n_heads, self.d_token))
@@ -504,7 +524,7 @@ class SAINTRegressor(RegressorMixin, BaseEstimator):
             n_heads_eff -= 1
         torch.manual_seed(get_config().RANDOM_SEED)
         self.model_ = self._Net(X_t.shape[1], self.d_token, n_heads_eff,
-                                self.n_layers, self.dropout).to(self.device_)
+                                self.n_layers, self.dropout, self.n_outputs_).to(self.device_)
         opt  = torch.optim.Adam(self.model_.parameters(), lr=self.lr, weight_decay=1e-5)
         loss = nn.MSELoss()
         ds   = torch.utils.data.TensorDataset(X_t, y_t)
@@ -522,7 +542,8 @@ class SAINTRegressor(RegressorMixin, BaseEstimator):
         dev = self.device_ or _torch_device()
         X_t = torch.tensor(X if isinstance(X, np.ndarray) else X.values, dtype=torch.float32).to(dev)
         with torch.no_grad():
-            return self.model_(X_t).squeeze().cpu().numpy()
+            out = self.model_(X_t).cpu().numpy()
+        return out.squeeze(axis=1) if getattr(self, "n_outputs_", 1) == 1 else out
 
     def get_params(self, deep=True):
         return dict(d_token=self.d_token, n_heads=self.n_heads, n_layers=self.n_layers,
@@ -566,29 +587,38 @@ class DeepGBMRegressor(RegressorMixin, BaseEstimator):
 
     def fit(self, X, y) -> "DeepGBMRegressor":
         from sklearn.ensemble import HistGradientBoostingRegressor
+        from sklearn.multioutput import MultiOutputRegressor
         Xa = X if isinstance(X, np.ndarray) else X.values
-        ya = y if isinstance(y, np.ndarray) else y.values
-        # Stage 1: GBM
-        self.gbm_ = HistGradientBoostingRegressor(
+        ya = y if isinstance(y, np.ndarray) else np.array(y)
+        self.n_outputs_ = 1 if ya.ndim == 1 else ya.shape[1]
+        # Stage 1: GBM (wrap with MultiOutputRegressor for multi-output)
+        base_gbm = HistGradientBoostingRegressor(
             max_iter=self.n_estimators, max_depth=self.max_depth,
             random_state=self.random_state,
         )
+        if self.n_outputs_ > 1:
+            self.gbm_ = MultiOutputRegressor(base_gbm)
+        else:
+            self.gbm_ = base_gbm
         self.gbm_.fit(Xa, ya)
-        gbm_preds = self.gbm_.predict(Xa)
+        gbm_preds = self.gbm_.predict(Xa)          # (N,) or (N, n_out)
         residuals = ya - gbm_preds
-        # Stage 2: MLP corrects residuals using original features + GBM pred
-        X_aug = np.column_stack([Xa, gbm_preds])
+        # Stage 2: MLP corrects residuals using original features + GBM pred(s)
+        gbm_col = gbm_preds if gbm_preds.ndim == 2 else gbm_preds[:, np.newaxis]
+        X_aug = np.column_stack([Xa, gbm_col])
         if not _HAS_TORCH:
             raise ImportError("torch required for DeepGBMRegressor MLP stage")
         self.device_ = _torch_device()
         X_t = torch.tensor(X_aug, dtype=torch.float32).to(self.device_)
-        y_t = torch.tensor(residuals, dtype=torch.float32).unsqueeze(1).to(self.device_)
+        y_t = torch.tensor(residuals, dtype=torch.float32).to(self.device_)
+        if y_t.ndim == 1:
+            y_t = y_t.unsqueeze(1)
         n_in = X_aug.shape[1]
         torch.manual_seed(self.random_state)
         self.mlp_ = nn.Sequential(
             nn.Linear(n_in, self.hidden_size), nn.ReLU(), nn.Dropout(self.dropout),
             nn.Linear(self.hidden_size, self.hidden_size // 2), nn.ReLU(),
-            nn.Linear(self.hidden_size // 2, 1),
+            nn.Linear(self.hidden_size // 2, self.n_outputs_),
         ).to(self.device_)
         opt  = torch.optim.Adam(self.mlp_.parameters(), lr=self.lr)
         loss = nn.MSELoss()
@@ -603,13 +633,15 @@ class DeepGBMRegressor(RegressorMixin, BaseEstimator):
 
     def predict(self, X) -> np.ndarray:
         Xa = X if isinstance(X, np.ndarray) else X.values
-        gbm_preds = self.gbm_.predict(Xa)
-        X_aug = np.column_stack([Xa, gbm_preds])
+        gbm_preds = self.gbm_.predict(Xa)          # (N,) or (N, n_out)
+        gbm_col = gbm_preds if gbm_preds.ndim == 2 else gbm_preds[:, np.newaxis]
+        X_aug = np.column_stack([Xa, gbm_col])
         dev   = self.device_ or _torch_device()
         X_t   = torch.tensor(X_aug, dtype=torch.float32).to(dev)
         with torch.no_grad():
-            mlp_corr = self.mlp_(X_t).squeeze().cpu().numpy()
-        return gbm_preds + mlp_corr
+            mlp_corr = self.mlp_(X_t).cpu().numpy()  # (N, n_out)
+        result = gbm_preds + (mlp_corr.squeeze(axis=1) if self.n_outputs_ == 1 else mlp_corr)
+        return result
 
     def get_params(self, deep=True):
         return dict(n_estimators=self.n_estimators, max_depth=self.max_depth,
@@ -1123,35 +1155,50 @@ def evaluate_classifiers(
     return df_results
 
 
-def get_models() -> dict:
+def get_models(n_outputs: int = 1) -> dict:
     """Instantiate all available candidate models with default hyperparameters.
 
     Models are included only if their optional dependencies are importable
     (xgboost, catboost, torch, lightgbm). Linear, Ridge, RandomForest,
     ExtraTrees, ElasticNet and HistGradientBoosting are always present.
 
+    Args:
+        n_outputs: Number of target columns. When > 1, models that do not
+            natively support multi-output regression are wrapped with
+            MultiOutputRegressor (GradientBoosting, XGBoost, CatBoost, LightGBM).
+
     Returns:
         Ordered dictionary mapping model name to an unfitted estimator instance.
     """
+    def _mo(m):
+        """Wrap with MultiOutputRegressor if multi-output is requested."""
+        return MultiOutputRegressor(m) if n_outputs > 1 else m
+
     models = {
         "linear": LinearRegression(),
         "ridge": Ridge(**get_config().MODEL_DEFAULTS["ridge"]),
         "elasticnet": ElasticNet(**get_config().MODEL_DEFAULTS["elasticnet"]),
         "cart": DecisionTreeRegressor(**get_config().MODEL_DEFAULTS["cart"]),
-        "gradient_boosting": GradientBoostingRegressor(**get_config().MODEL_DEFAULTS["gradient_boosting"]),
         "random_forest": RandomForestRegressor(**get_config().MODEL_DEFAULTS["random_forest"]),
         "extra_trees": ExtraTreesRegressor(**get_config().MODEL_DEFAULTS["extra_trees"]),
-        "hist_gradient_boosting": HistGradientBoostingRegressor(**get_config().MODEL_DEFAULTS["hist_gradient_boosting"]),
     }
+    
+    if n_outputs > 1:
+        models["hist_gradient_boosting"] = _mo(HistGradientBoostingRegressor(**get_config().MODEL_DEFAULTS["hist_gradient_boosting"]))
+        models["gradient_boosting"] = _mo(GradientBoostingRegressor(**get_config().MODEL_DEFAULTS["gradient_boosting"]))
+    else:
+        models["hist_gradient_boosting"] = HistGradientBoostingRegressor(**get_config().MODEL_DEFAULTS["hist_gradient_boosting"])
+        models["gradient_boosting"] = GradientBoostingRegressor(**get_config().MODEL_DEFAULTS["gradient_boosting"])
+
     if _HAS_XGB:
-        models["xgboost"] = XGBRegressor(**get_config().MODEL_DEFAULTS["xgboost"],
-                                         **_device_kwargs("xgboost"))
+        models["xgboost"] = _mo(XGBRegressor(**get_config().MODEL_DEFAULTS["xgboost"],
+                                              **_device_kwargs("xgboost")))
     if _HAS_CAT:
-        models["catboost"] = CatBoostRegressor(**get_config().MODEL_DEFAULTS["catboost"],
-                                               **_device_kwargs("catboost"))
+        models["catboost"] = _mo(CatBoostRegressor(**get_config().MODEL_DEFAULTS["catboost"],
+                                                   **_device_kwargs("catboost")))
     if _HAS_LGB:
-        models["lightgbm"] = LGBMRegressor(**get_config().MODEL_DEFAULTS["lightgbm"],
-                                           **_device_kwargs("lightgbm"))
+        models["lightgbm"] = _mo(LGBMRegressor(**get_config().MODEL_DEFAULTS["lightgbm"],
+                                               **_device_kwargs("lightgbm")))
     if _HAS_TORCH:
         models["mlp"]            = TorchMLP(**get_config().MODEL_DEFAULTS["mlp"])
         models["tab_cnn"]        = TabCNNRegressor(**get_config().MODEL_DEFAULTS.get("tab_cnn", {}))
@@ -1188,6 +1235,7 @@ def evaluate_all(
     preprocessor: Pipeline = None,
     per_fold_hpo: bool = False,
     n_hpo_trials: int = 50,
+    aug_ratio: float = 0.0,
 ) -> pd.DataFrame:
     """Cross-validate all models and collect per-fold metrics.
 
@@ -1239,6 +1287,15 @@ def evaluate_all(
         for fold_idx, (train_idx, val_idx) in enumerate(cv_splits):
             X_tr, X_val = X_arr[train_idx], X_arr[val_idx]
             y_tr, y_val = y_arr[train_idx], y_arr[val_idx]
+
+            if aug_ratio > 0.0:
+                rng   = np.random.default_rng(42 + fold_idx)
+                n_aug = max(1, int(len(X_tr) * aug_ratio))
+                idx   = rng.integers(0, len(X_tr), size=n_aug)
+                noise = rng.normal(0, 0.02, size=(n_aug, X_tr.shape[1]))
+                X_tr  = np.vstack([X_tr, X_tr[idx] + noise])
+                y_tr_aug = rng.normal(y_tr[idx], np.abs(y_tr[idx]).mean() * 0.02)
+                y_tr  = np.concatenate([y_tr, y_tr_aug])
 
             X_tr_scaled  = preprocessor.fit_transform(X_tr)
             X_val_scaled = preprocessor.transform(X_val)

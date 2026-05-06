@@ -49,13 +49,15 @@ except Exception:
     _HAS_LGB = False
 
 
-def _build_model(model_name: str, params: dict):
+def _build_model(model_name: str, params: dict, n_outputs: int = 1):
     """Instantiate a model by name, merging config defaults with tuned params.
 
     Args:
         model_name: One of 'linear', 'ridge', 'random_forest', 'xgboost',
-            'catboost', 'mlp'.
+            'catboost', 'mlp', etc.
         params: Hyperparameter overrides (e.g. best params from HP tuning).
+        n_outputs: Number of target columns. When > 1, models that do not
+            natively support multi-output are wrapped with MultiOutputRegressor.
 
     Returns:
         Unfitted estimator instance.
@@ -63,11 +65,16 @@ def _build_model(model_name: str, params: dict):
     Raises:
         ValueError: If model_name is not recognised.
     """
+    from sklearn.multioutput import MultiOutputRegressor
     from .model_testing import TorchMLP
     base_params = dict(get_config().MODEL_DEFAULTS.get(model_name, {}))
     base_params.update(params)
 
     from .model_testing import _device_kwargs
+
+    def _mo(m):
+        return MultiOutputRegressor(m) if n_outputs > 1 else m
+
     if model_name == "linear":
         return LinearRegression()
     elif model_name == "ridge":
@@ -75,19 +82,19 @@ def _build_model(model_name: str, params: dict):
     elif model_name == "cart":
         return DecisionTreeRegressor(**base_params)
     elif model_name == "gradient_boosting":
-        return GradientBoostingRegressor(**base_params)
+        return _mo(GradientBoostingRegressor(**base_params))
     elif model_name == "random_forest":
         return RandomForestRegressor(**base_params)
     elif model_name == "xgboost":
-        return XGBRegressor(**{**base_params, **_device_kwargs("xgboost")})
+        return _mo(XGBRegressor(**{**base_params, **_device_kwargs("xgboost")}))
     elif model_name == "catboost":
-        return CatBoostRegressor(**{**base_params, **_device_kwargs("catboost")})
+        return _mo(CatBoostRegressor(**{**base_params, **_device_kwargs("catboost")}))
     elif model_name == "mlp":
         return TorchMLP(**base_params)
     elif model_name == "lightgbm":
         if not _HAS_LGB_FT:
             raise ImportError("lightgbm is not installed.")
-        return LGBMRegressor(**{**base_params, **_device_kwargs("lightgbm")})
+        return _mo(LGBMRegressor(**{**base_params, **_device_kwargs("lightgbm")}))
     elif model_name == "tabnet":
         from .model_testing import TabNetRegressorWrapper
         return TabNetRegressorWrapper(**base_params)
@@ -110,7 +117,7 @@ def _build_model(model_name: str, params: dict):
     elif model_name == "elasticnet":
         return ElasticNet(**base_params)
     elif model_name == "svr":
-        return SVR(**base_params)
+        return _mo(SVR(**base_params))
     else:
         raise ValueError(f"Unknown model: {model_name}")
 

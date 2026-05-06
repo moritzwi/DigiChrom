@@ -16,20 +16,40 @@ from .config import get_config
 def split_xy(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     """Split a clean DataFrame into feature matrix X and target series y.
 
-    Columns listed in config.FEATURE_COLS that are entirely NaN (missing from
-    the uploaded file) are silently dropped so imputation doesn't fail.
+    Includes any '<col>_was_missing' indicator columns produced by
+    data_loading.add_missing_indicators() for columns listed in
+    config.INDICATOR_COLS. Columns entirely NaN are silently dropped.
 
     Returns:
         Tuple of (X, y) where X is a DataFrame of features and y is a Series
         of target values.
     """
-    feat_cols = [c for c in get_config().FEATURE_COLS if c in df.columns]
+    cfg = get_config()
+    feat_cols = [c for c in cfg.FEATURE_COLS if c in df.columns]
+
+    # Append indicator columns if present in the DataFrame
+    indicator_cols = getattr(cfg, "INDICATOR_COLS", [])
+    for col in indicator_cols:
+        ind = f"{col}_was_missing"
+        if ind in df.columns and ind not in feat_cols:
+            feat_cols.append(ind)
+
     X = df[feat_cols].copy()
-    # Drop columns where every value is NaN — can't impute or scale those
     all_nan = [c for c in X.columns if X[c].isna().all()]
     if all_nan:
         X = X.drop(columns=all_nan)
-    y = df[get_config().TARGET_COL].copy()
+
+    # One-hot encode any non-numeric column (handles object, string[pyarrow], category, etc.)
+    cat_cols = [c for c in X.columns if not pd.api.types.is_numeric_dtype(X[c])]
+    if cat_cols:
+        X = pd.get_dummies(X, columns=cat_cols, drop_first=False, dtype=float)
+        print(f"[preprocessing] OHE applied to: {cat_cols} → {X.shape[1]} total features")
+
+    target = cfg.TARGET_COL
+    if isinstance(target, list):
+        y = df[target].copy()           # DataFrame → multi-output
+    else:
+        y = df[target].copy()           # Series → single-output
     return X, y
 
 
