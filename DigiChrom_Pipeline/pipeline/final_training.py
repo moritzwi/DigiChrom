@@ -145,9 +145,11 @@ def train_final(
     best_params = best_params or {}
     preprocessor = preprocessor or make_preprocessor()
 
-    model = _build_model(model_name, best_params)
+    y_arr = y_train.values if hasattr(y_train, "values") else np.asarray(y_train)
+    n_outputs = 1 if y_arr.ndim == 1 else y_arr.shape[1]
+    model = _build_model(model_name, best_params, n_outputs=n_outputs)
     X_scaled = preprocessor.fit_transform(X_train.values)
-    model.fit(X_scaled, y_train.values)
+    model.fit(X_scaled, y_arr)
 
     print(f"[final_training] Trained {model_name} on {len(X_train)} samples")
     return model, preprocessor

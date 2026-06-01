@@ -70,17 +70,19 @@ try:
             super().__init__(**kwargs)
 
         def fit(self, X, y):
+            y_np = y if isinstance(y, np.ndarray) else y.values
+            if y_np.ndim == 1:
+                y_np = y_np.reshape(-1, 1)
             super().fit(
                 X if isinstance(X, np.ndarray) else X.values,
-                (y if isinstance(y, np.ndarray) else y.values).reshape(-1, 1),
+                y_np,
                 **self._fit_kwargs,
             )
             return self
 
         def predict(self, X):
-            return super().predict(
-                X if isinstance(X, np.ndarray) else X.values
-            ).flatten()
+            out = super().predict(X if isinstance(X, np.ndarray) else X.values)
+            return out.squeeze(axis=1) if out.shape[1] == 1 else out
 
         def __sklearn_tags__(self):
             try:

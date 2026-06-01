@@ -327,7 +327,7 @@ def _objective_factory(
 
         # Wrap with MultiOutputRegressor for models that don't support multi-output natively
         if n_outputs > 1 and model_name in (
-            "gradient_boosting", "xgboost", "catboost", "lightgbm", "svr"
+            "gradient_boosting", "hist_gradient_boosting", "xgboost", "catboost", "lightgbm", "svr"
         ):
             from sklearn.multioutput import MultiOutputRegressor
             model = MultiOutputRegressor(model)
@@ -355,6 +355,7 @@ def tune(
     y: pd.Series,
     cv_splits: list = None,
     n_trials: int = 100,
+    n_outputs: int = 1,
 ) -> dict:
     """Run an Optuna hyperparameter search for a single model.
 
@@ -384,7 +385,7 @@ def tune(
         sampler=optuna.samplers.TPESampler(seed=get_config().RANDOM_SEED),
     )
     study.optimize(
-        _objective_factory(model_name, X_arr, y_arr, cv_splits),
+        _objective_factory(model_name, X_arr, y_arr, cv_splits, n_outputs=n_outputs),
         n_trials=n_trials,
         show_progress_bar=False,
     )

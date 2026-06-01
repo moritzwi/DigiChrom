@@ -20,10 +20,10 @@ import datetime as dt
 _HERE = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).parent
 sys.path.insert(0, str(_HERE))
 
-_MODELS_DIR   = _HERE / "models"
-_FIGURES_DIR  = _HERE / "figures"
-_REPORTS_DIR  = _HERE / "reports"
-_PROFILES_DIR = _HERE / "profiles"
+_MODELS_DIR   = _HERE / "app" / "models"
+_FIGURES_DIR  = _HERE / "app" / "figures"
+_REPORTS_DIR  = _HERE / "app" / "reports"
+_PROFILES_DIR = _HERE / "app" / "profiles"
 for _d in (_MODELS_DIR, _FIGURES_DIR, _REPORTS_DIR, _PROFILES_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
@@ -111,7 +111,6 @@ _SS_DEFAULTS: dict = {
     "task": "regression",
     "y_class_train": None, "y_class_test": None,
     "median_threshold": None,
-    # new
     "nan_sentinel": -999999,
     "indicator_cols": [],
     "censored_cols": {},
@@ -119,6 +118,7 @@ _SS_DEFAULTS: dict = {
     "is_multi_output": False,
     "target_names": [],
     "_pending_profile": None,
+    "original_feature_cols": [],
 }
 for _k, _v in _SS_DEFAULTS.items():
     if _k not in st.session_state:
@@ -208,6 +208,13 @@ def _store_data(df: pd.DataFrame, feature_cols: list[str], target_col,
             x_cols.append(ind_name)
 
     X = wdf[x_cols].copy()
+    for _col in X.columns:
+        if not pd.api.types.is_numeric_dtype(X[_col]):
+            _converted = pd.to_numeric(
+                X[_col].astype(str).str.replace(",", ".", regex=False), errors="coerce"
+            )
+            if _converted.notna().mean() >= 0.8:
+                X[_col] = _converted
     cat_cols = [c for c in X.columns if not pd.api.types.is_numeric_dtype(X[c])]
     if cat_cols:
         X = pd.get_dummies(X, columns=cat_cols, drop_first=False, dtype=float)
@@ -230,6 +237,7 @@ def _store_data(df: pd.DataFrame, feature_cols: list[str], target_col,
         "y_class_train": y_cls_tr, "y_class_test": y_cls_te,
         "median_threshold": med, "median_threshold_override": threshold_override,
         "custom_feature_cols": list(X.columns), "custom_target_col": target_col,
+        "original_feature_cols": list(x_cols),
         "task": task, "indicator_cols": indicator_cols,
         "is_multi_output": is_multi,
         "target_names": target_col if is_multi else [tc_list[0]],
@@ -285,30 +293,24 @@ if st.session_state.final_model is None:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("🔬 DigiChrom")
+    st.title("DigiChrom Machine Learning Pipeline")
     st.divider()
     st.markdown("**Status**")
     st.markdown(f"{'✅' if st.session_state.df is not None else '⚪'} Data loaded")
     st.markdown(f"{'✅' if st.session_state.cv_results is not None else '⚪'} CV evaluated")
-    st.markdown(f"{'✅' if st.session_state.final_model is not None else '⚪'} Model ready")
+    st.markdown(f"{'✅' if st.session_state.final_model is not None else '⚪'} Model available")
     if st.session_state.df is not None:
         lbl = "multi-output" if st.session_state.is_multi_output else st.session_state.task
         st.caption(f"{len(st.session_state.df)} samples · {len(_fc())} features · {lbl}")
-    if st.session_state.final_metrics:
-        m = st.session_state.final_metrics
-        if isinstance(m.get("r2"), float):
-            st.divider()
-            st.markdown("**Test Metrics**")
-            st.caption(f"R² = {m['r2']:.3f}\nRMSE = {m['rmse']:.4f}\nMAE  = {m['mae']:.4f}")
     st.divider()
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_data, tab_train, tab_xai, tab_inv, tab_feat = st.tabs([
-    "📂  Data",
-    "🤖  Model Training",
-    "📊  Feature Importance",
-    "🔄  Inverse ML",
-    "📋  Data Overview",
+    "Data",
+    "Model Training",
+    "Feature Importance",
+    "Inverse ML",
+    "Data Overview",
 ])
 
 
@@ -349,8 +351,15 @@ with tab_data:
         if st.session_state.raw_filename != uploaded.name:
             with st.spinner("Reading file…"):
                 try:
-                    raw = (pd.read_csv(uploaded) if uploaded.name.endswith(".csv")
-                           else pd.read_excel(uploaded))
+                    if uploaded.name.endswith(".csv"):
+                        try:
+                            raw = pd.read_csv(uploaded)
+                        except Exception:
+                            uploaded.seek(0)
+                            raw = pd.read_csv(uploaded, sep=None, engine="python",
+                                              on_bad_lines="skip")
+                    else:
+                        raw = pd.read_excel(uploaded)
                     raw.columns = raw.columns.str.strip()
                     st.session_state.raw_df       = raw
                     st.session_state.raw_filename = uploaded.name
@@ -368,10 +377,10 @@ with tab_data:
 
                 # NaN sentinel
                 sentinel_str = st.text_input(
-                    "Missing-value sentinel (replaced with NaN before loading)",
+                    "Fehlender-Wert-Sentinel (ersetzt mit NaN vor dem Laden)",
                     value=str(pprof["nan_sentinel"]) if pprof and "nan_sentinel" in pprof
                           else str(st.session_state.nan_sentinel),
-                    help="Rows containing this value are treated as missing data. Default: -999999",
+                    help="Zeilen, die diesen Wert enthalten, werden als fehlende Werte behandelt. Default: -999999",
                 )
 
                 st.divider()
@@ -397,33 +406,34 @@ with tab_data:
                     _task_opts,
                     index=_task_opts.index(_default_task) if _default_task in _task_opts else 0,
                     horizontal=True,
-                    disabled=_task_disabled,
-                    help="Selecting 2+ targets forces regression.",
+                    disabled=_task_disabled
                 )
                 if _task_disabled:
                     sel_task = "regression"
 
                 # Features
                 non_target    = [c for c in all_cols if c not in sel_target]
-                default_feats = pprof.get("feature_cols", non_target) if pprof else non_target
+                default_feats = pprof.get("feature_cols", []) if pprof else []
                 valid_feats   = [c for c in default_feats if c in non_target]
                 sel_features  = st.multiselect(
                     "Feature columns",
                     options=non_target,
-                    default=valid_feats or non_target,
+                    key="sel_feature_cols",
+                    default=default_feats,
                 )
 
                 st.divider()
-
+                
                 # Indicator columns
                 default_ind = pprof.get("indicator_cols", []) if pprof else []
                 valid_ind   = [c for c in default_ind if c in sel_features]
                 sel_ind = st.multiselect(
-                    "Optional features — NaN means the step was skipped (not an error)",
-                    options=sel_features,
-                    default=valid_ind,
-                    help="These columns keep their NaN rows. A binary indicator column is added "
-                         "automatically. NaN is imputed later by the preprocessor.",
+                    "Optionale Merkmale — NaN bedeutet, dass der Schritt übersprungen wurde (kein Fehler)",
+                    options=non_target,
+                    default=default_ind,
+                    key="sel_indicator_cols",
+                    help="Diese Spalten behalten ihre NaN-Zeilen. Es wird eine binäre Indikatorspalte "
+                        "hinzugefügt.",
                 )
 
                 # Censored columns
@@ -432,10 +442,10 @@ with tab_data:
                     f"{col}:{sym}" for col, sym in default_cens.items()
                 )
                 cens_input = st.text_input(
-                    "Censored columns  (format: col1:<, col2:<)",
+                    "Zensierte Spalten (Format: Spalte1:<, Spalte2:<)",
                     value=cens_default_str,
-                    help="Values like '<5' are replaced with half the detection limit (2.5). "
-                         "Enter column name : prefix, comma-separated.",
+                    help="Werte wie '<5' werden durch die Hälfte der Nachweisgrenze (2.5) ersetzt. "
+                        "Geben Sie Spaltenname : Präfix ein, getrennt durch Kommata.",
                 )
 
                 # Classification threshold
@@ -458,19 +468,32 @@ with tab_data:
                 # Profile save row (inside the form)
                 ps1, ps2 = st.columns([3, 1])
                 profile_name = ps1.text_input(
-                    "Save this configuration as",
+                    "Speicherung des Proils unter diesem Namen",
                     value=pprof.get("_name", "") if pprof else "",
                     placeholder="e.g.  my_dataset_configuration",
                 )
                 save_profile_btn = ps2.form_submit_button("💾  Save profile")
 
                 load_btn = st.form_submit_button(
-                    "✓  Load data with this configuration", type="primary",
+                    "✓  Daten mit dieser Konfiguration laden", type="primary",
                 )
 
             # ── Form submission handlers ───────────────────────────────────
-            if save_profile_btn and profile_name.strip():
-                _save_profile(profile_name.strip(), {
+            if save_profile_btn and not profile_name.strip():
+                st.error("Bitte einen Namen für das Profil angeben.")
+                st.session_state["_pending_profile"] = {
+                    "feature_cols":    sel_features,
+                    "target_col":      sel_target if len(sel_target) > 1 else
+                                       (sel_target[0] if sel_target else ""),
+                    "task":            sel_task,
+                    "nan_sentinel":    _parse_sentinel(sentinel_str),
+                    "indicator_cols":  sel_ind,
+                    "censored_cols":   _parse_censored_str(cens_input),
+                    "median_threshold": thr_override,
+                }
+            elif save_profile_btn and profile_name.strip():
+                st.toast(f"Selected Features: {', '.join(sel_features)}", icon="📋")
+                _saved = {
                     "_name":           profile_name.strip(),
                     "feature_cols":    sel_features,
                     "target_col":      sel_target if len(sel_target) > 1 else
@@ -480,9 +503,11 @@ with tab_data:
                     "indicator_cols":  sel_ind,
                     "censored_cols":   _parse_censored_str(cens_input),
                     "median_threshold": thr_override,
-                })
+                }
+                _save_profile(profile_name.strip(), _saved)
+                st.session_state["_pending_profile"] = _saved
                 st.toast(f"✅ Profile '{profile_name.strip()}' saved", icon="💾")
-                st.rerun()
+                #st.rerun()
 
             if load_btn:
                 if not sel_features:
@@ -494,12 +519,20 @@ with tab_data:
                     censored_dict = _parse_censored_str(cens_input)
                     st.session_state.nan_sentinel  = sentinel_val
                     st.session_state.censored_cols = censored_dict
-                    st.session_state["_pending_profile"] = None
+                    target_val = sel_target if len(sel_target) > 1 else sel_target[0]
+                    # Preserve current form state so multiselects don't reset to "all" on rerun
+                    st.session_state["_pending_profile"] = {
+                        "feature_cols":    sel_features,
+                        "target_col":      target_val,
+                        "task":            sel_task,
+                        "nan_sentinel":    sentinel_val,
+                        "indicator_cols":  sel_ind,
+                        "censored_cols":   censored_dict,
+                        "median_threshold": thr_override,
+                    }
 
                     proc = _apply_nan_sentinel(raw.copy(), sentinel_val)
                     proc = _apply_censored(proc, censored_dict)
-
-                    target_val = sel_target if len(sel_target) > 1 else sel_target[0]
                     _store_data(
                         proc,
                         feature_cols=sel_features,
@@ -514,7 +547,7 @@ with tab_data:
                     if dropped:
                         note += f"  ({dropped} rows dropped — missing target)"
                     st.toast(note, icon="✅")
-                    st.rerun()
+                    #st.rerun()
 
     # ── Data summary ───────────────────────────────────────────────────────
     if st.session_state.df is not None:
@@ -568,7 +601,7 @@ with tab_data:
                     st.pyplot(fig_h, use_container_width=False, clear_figure=True)
                     plt.close(fig_h)
     else:
-        st.info("Upload an Excel or CSV file to get started.")
+        st.info("Lade eine Excel- oder CSV-Datei hoch, um zu starten.")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -578,7 +611,7 @@ with tab_train:
     st.header("Model Training")
 
     if st.session_state.df is None:
-        st.warning("Load data first (→ **Data** tab).")
+        st.warning("Zuerst Daten laden (→ **Data** tab).")
     else:
         _is_clf     = st.session_state.task == "classification" and not st.session_state.is_multi_output
         _n_out      = _n_outputs()
@@ -628,20 +661,20 @@ with tab_train:
             "Per-fold HPO", value=False,
             help="Optimiert die Modellparameter in jeder Falte automatisch. Langsamer, aber genauer.",
         )
-        use_aug   = cv_col3.toggle(
-            "Augmentierung", value=False,
-            help="Erzeugt synthetische Trainingsdaten durch leichtes Verrauschen "
-                 "der vorhandenen Proben. Hilfreich bei kleinen Datensätzen.",
-        )
+        # use_aug   = cv_col3.toggle(
+        #     "Augmentierung", value=False,
+        #     help="Erzeugt synthetische Trainingsdaten durch leichtes Verrauschen "
+        #          "der vorhandenen Proben. Hilfreich bei kleinen Datensätzen.",
+        # )
         pfhpo_trials = int(cv_col4.slider(
             "HPO-Versuche pro Fold", 10, 100, 30, step=5, disabled=not use_pfhpo,
         ))
-        aug_ratio = 0.0
-        if use_aug:
-            aug_ratio = float(cv_col4.slider(
-                "Augmentierungsfaktor", 0.1, 2.0, 0.5, step=0.1,
-                help="0.5 = 50% zusätzliche synthetische Proben, 1.0 = Datensatz verdoppeln.",
-            ))
+        # aug_ratio = 0.0
+        # if use_aug:
+        #     aug_ratio = float(cv_col4.slider(
+        #         "Augmentierungsfaktor", 0.1, 2.0, 0.5, step=0.1,
+        #         help="0.5 = 50% zusätzliche synthetische Proben, 1.0 = Datensatz verdoppeln.",
+        #     ))
 
         if st.button("▶  Cross-Validation starten", type="primary"):
             if not selected:
@@ -664,7 +697,7 @@ with tab_train:
                         parts.append(evaluate_all(
                             X_tr, y_tr, models=mdl_sub, cv_splits=splits,
                             per_fold_hpo=use_pfhpo, n_hpo_trials=pfhpo_trials,
-                            aug_ratio=aug_ratio,
+                            #aug_ratio=aug_ratio,
                         ))
                 bar.progress(1.0, text="Fertig!")
                 cv = pd.concat(parts, ignore_index=True)
@@ -692,7 +725,7 @@ with tab_train:
             st.dataframe(styled, use_container_width=True)
 
             n_m = len(metrics_avail)
-            fig_cv, axes = plt.subplots(1, n_m, figsize=(min(4 * n_m, 14), 3.5))
+            fig_cv, axes = plt.subplots(1, n_m, figsize=(min(4 * n_m, 8), 3.5))
             if n_m == 1:
                 axes = [axes]
             for ax, metric in zip(axes, metrics_avail):
@@ -704,7 +737,8 @@ with tab_train:
                 ax.tick_params(axis="x", rotation=40, labelsize=7)
             fig_cv.suptitle("Cross-Validation Vergleich", fontsize=11)
             plt.tight_layout()
-            st.pyplot(fig_cv, use_container_width=True, clear_figure=True)
+            col_plot, _ = st.columns(2)
+            col_plot.pyplot(fig_cv, use_container_width=True, clear_figure=True)
             plt.close(fig_cv)
 
         # ── Final Model ────────────────────────────────────────────────────
@@ -718,15 +752,15 @@ with tab_train:
         fin_col1, fin_col2, fin_col3 = st.columns([1, 1, 2])
         run_hpo      = fin_col1.toggle("HPO (Optuna)", value=False,
                                        help="Automatische Hyperparameter-Suche mit Optuna.")
-        use_aug_fin  = fin_col2.toggle("Augmentierung", value=False,
-                                       help="Synthetische Datenpunkte für das finale Training erzeugen.")
+        # use_aug_fin  = fin_col2.toggle("Augmentierung", value=False,
+        #                                help="Synthetische Datenpunkte für das finale Training erzeugen.")
         n_trials     = fin_col3.slider("HPO-Versuche", 10, 200, 50, step=10, disabled=not run_hpo)
-        aug_ratio_fin = 0.0
-        if use_aug_fin:
-            aug_ratio_fin = float(fin_col3.slider(
-                "Augmentierungsfaktor (final)", 0.1, 2.0, 0.5, step=0.1,
-                help="0.5 = 50% zusätzliche synthetische Proben.",
-            ))
+        # aug_ratio_fin = 0.0
+        # if use_aug_fin:
+        #     aug_ratio_fin = float(fin_col3.slider(
+        #         "Augmentierungsfaktor (final)", 0.1, 2.0, 0.5, step=0.1,
+        #         help="0.5 = 50% zusätzliche synthetische Proben.",
+        #     ))
 
         if st.button("▶  Finales Modell trainieren", type="primary"):
             with st.spinner(f"Training {chosen}…"):
@@ -737,6 +771,7 @@ with tab_train:
                             best_params = hp_tuning.tune(
                                 chosen, st.session_state.X_train,
                                 st.session_state.y_train, n_trials=n_trials,
+                                n_outputs=_n_outputs(),
                             )
                             st.info(f"Best params: {best_params}")
                         except Exception as hpo_exc:
@@ -747,29 +782,29 @@ with tab_train:
 
                     if _is_clf:
                         mdl_, pre_ = train_final_classifier(chosen, st.session_state.X_train, y_tr)
-                        if aug_ratio_fin > 0.0:
-                            _rng   = np.random.default_rng(42)
-                            _Xs    = pre_.transform(st.session_state.X_train.values)
-                            _n_aug = max(1, int(len(_Xs) * aug_ratio_fin))
-                            _idx   = _rng.integers(0, len(_Xs), size=_n_aug)
-                            _noise = _rng.normal(0, 0.02, size=(_n_aug, _Xs.shape[1]))
-                            _Xs_aug = np.vstack([_Xs, _Xs[_idx] + _noise])
-                            _ys_aug = np.concatenate([y_tr.values, y_tr.values[_idx]])
-                            mdl_.fit(_Xs_aug, _ys_aug)
+                        # if aug_ratio_fin > 0.0:
+                        #     _rng   = np.random.default_rng(42)
+                        #     _Xs    = pre_.transform(st.session_state.X_train.values)
+                        #     _n_aug = max(1, int(len(_Xs) * aug_ratio_fin))
+                        #     _idx   = _rng.integers(0, len(_Xs), size=_n_aug)
+                        #     _noise = _rng.normal(0, 0.02, size=(_n_aug, _Xs.shape[1]))
+                        #     _Xs_aug = np.vstack([_Xs, _Xs[_idx] + _noise])
+                        #     _ys_aug = np.concatenate([y_tr.values, y_tr.values[_idx]])
+                        #     mdl_.fit(_Xs_aug, _ys_aug)
                         met = eval_final_classifier(mdl_, pre_, st.session_state.X_test, y_te)
                     else:
                         mdl_, pre_ = train_final(chosen, st.session_state.X_train, y_tr,
                                                  best_params=best_params)
-                        if aug_ratio_fin > 0.0:
-                            _rng   = np.random.default_rng(42)
-                            _Xs    = pre_.transform(st.session_state.X_train.values)
-                            _n_aug = max(1, int(len(_Xs) * aug_ratio_fin))
-                            _idx   = _rng.integers(0, len(_Xs), size=_n_aug)
-                            _noise = _rng.normal(0, 0.02, size=(_n_aug, _Xs.shape[1]))
-                            _Xs_aug = np.vstack([_Xs, _Xs[_idx] + _noise])
-                            _ys_aug = np.concatenate([y_tr.values, _rng.normal(
-                                y_tr.values[_idx], np.abs(y_tr.values).mean() * 0.02)])
-                            mdl_.fit(_Xs_aug, _ys_aug)
+                        # if aug_ratio_fin > 0.0:
+                        #     _rng   = np.random.default_rng(42)
+                        #     _Xs    = pre_.transform(st.session_state.X_train.values)
+                        #     _n_aug = max(1, int(len(_Xs) * aug_ratio_fin))
+                        #     _idx   = _rng.integers(0, len(_Xs), size=_n_aug)
+                        #     _noise = _rng.normal(0, 0.02, size=(_n_aug, _Xs.shape[1]))
+                        #     _Xs_aug = np.vstack([_Xs, _Xs[_idx] + _noise])
+                        #     _ys_aug = np.concatenate([y_tr.values, _rng.normal(
+                        #         y_tr.values[_idx], np.abs(y_tr.values).mean() * 0.02)])
+                        #     mdl_.fit(_Xs_aug, _ys_aug)
                         met = eval_final(mdl_, pre_, st.session_state.X_test, y_te)
 
                     X_sample = pre_.transform(st.session_state.X_train.values)
@@ -837,10 +872,11 @@ with tab_train:
                     if m.get("r2_ci_low") is not None:
                         r2_s   += f"  [{m['r2_ci_low']:.3f}, {m['r2_ci_high']:.3f}]"
                         rmse_s += f"  [{m['rmse_ci_low']:.4f}, {m['rmse_ci_high']:.4f}]"
+                        mae_s  += f"  [{m['mae_ci_low']:.4f}, {m['mae_ci_high']:.4f}]"
+                    c4.metric("Test Samples", int(m["n_test"]) if m.get("n_test") is not None else "—")
                     c1.metric("Test R²",      r2_s)
                     c2.metric("Test RMSE",    rmse_s)
                     c3.metric("Test MAE",     mae_s)
-                    c4.metric("Test Samples", int(m["n_test"]) if m.get("n_test") is not None else "—")
 
                     with st.expander("Predicted vs. True", expanded=False):
                         try:
@@ -882,12 +918,13 @@ with tab_train:
                         custom_name=model_save_name,
                         X_sample=_x_sample,
                         metadata={
-                            "feature_cols":     _feat_cols,
-                            "target_col":       _tc(),
-                            "target_names":     st.session_state.target_names,
-                            "task":             st.session_state.task,
-                            "is_multi_output":  st.session_state.is_multi_output,
-                            "median_threshold": st.session_state.median_threshold,
+                            "feature_cols":          _feat_cols,
+                            "original_feature_cols": st.session_state.get("original_feature_cols", []),
+                            "target_col":            _tc(),
+                            "target_names":          st.session_state.target_names,
+                            "task":                  st.session_state.task,
+                            "is_multi_output":       st.session_state.is_multi_output,
+                            "median_threshold":      st.session_state.median_threshold,
                         },
                     )
                     st.toast(f"✅ Saved as '{model_save_name}'", icon="💾")
@@ -994,22 +1031,28 @@ with tab_xai:
             if X_xai is not None:
                 st.caption(f"Model: **{meta_xai.get('model_name', sel_xai)}** · {src_label}")
 
-                # Feature filter — lets users remove Date/ID columns from analysis
+                # Feature filter — lets users remove columns from analysis
+                _orig_feat_cols = meta_xai.get("original_feature_cols") or _model_feat_cols
                 with st.expander("🔧 Features für Analyse auswählen", expanded=False):
-                    st.caption(
-                        "Entferne Spalten wie Datum, Experiment-ID oder andere "
-                        "nicht-prädiktive Variablen, bevor du die Analyse startest."
-                    )
-                    _feat_filter = st.multiselect(
+                    _orig_filter = st.multiselect(
                         "Aktive Features",
-                        options=_model_feat_cols,
-                        default=_model_feat_cols,
+                        options=_orig_feat_cols,
+                        default=_orig_feat_cols,
                         key="xai_feat_filter",
                     )
-                if _feat_filter != _model_feat_cols:
-                    _feat_idx_map = [_model_feat_cols.index(f) for f in _feat_filter]
-                    X_xai            = X_xai[:, _feat_idx_map]
-                    _model_feat_cols = _feat_filter
+                if set(_orig_filter) != set(_orig_feat_cols):
+                    _removed = set(_orig_feat_cols) - set(_orig_filter)
+                    def _ohe_belongs_to(col, orig_names):
+                        for name in orig_names:
+                            if col == name or col.startswith(f"{name}_"):
+                                return True
+                        return False
+                    _keep_idx = [
+                        i for i, col in enumerate(_model_feat_cols)
+                        if not _ohe_belongs_to(col, _removed)
+                    ]
+                    X_xai            = X_xai[:, _keep_idx]
+                    _model_feat_cols = [_model_feat_cols[i] for i in _keep_idx]
 
                 _METHOD_INFO = {
                     "SHAP Summary": (
@@ -1079,22 +1122,31 @@ with tab_xai:
                 }
                 _USES_TOP_N = {
                     "SHAP Dependence",
-                    "ICE Plots", "ALE Plots", "PDP Plots", "Permutation Importance",
+                    "ICE Plots", "ALE Plots", "PDP Plots",
                 }
 
-                _METHODS = [
-                    "SHAP Summary",
-                    "SHAP Dependence",
-                    "SHAP Interactions (tree models)",
-                    "ICE Plots",
-                    "ALE Plots",
-                    "PDP Plots",
-                    "Permutation Importance",
-                    "Learning Curve",
-                    "Decision Tree Visualisation",
-                    "Confusion Matrix (classification)",
-                    "Classification Report (classification)",
-                ]
+                if st.session_state.task == "classification":
+                    _METHODS = [
+                        "SHAP Summary",
+                        "SHAP Dependence",
+                        "SHAP Interactions (tree models)",
+                        "ICE Plots",
+                        "ALE Plots",
+                        "PDP Plots",
+                        "Permutation Importance",
+                        "Decision Tree Visualisation",
+                        "Confusion Matrix (classification)",
+                        "Classification Report (classification)",
+                    ]
+                else:
+                    _METHODS = [
+                        "SHAP Summary",
+                        "SHAP Dependence",
+                        "SHAP Interactions (tree models)",
+                        "ICE Plots",
+                        "ALE Plots",
+                        "PDP Plots",
+                        "Permutation Importance"                    ]
                 method = st.selectbox("Analysemethode", _METHODS)
                 top_n_xai = 6
                 if method in _USES_TOP_N:
@@ -1108,13 +1160,13 @@ with tab_xai:
                     )
 
                 _needs_labels = method in (
-                    "Permutation Importance", "Learning Curve",
-                    "Confusion Matrix (classification)", "Classification Report (classification)",
+                    "Permutation Importance", "Confusion Matrix (classification)", "Classification Report (classification)",
                 )
+
                 disabled_btn = _needs_labels and y_xai is None
                 if disabled_btn:
-                    st.warning("This method needs ground-truth labels — load data in **Data** tab.")
-
+                    st.warning("This method needs ground-truth labels. Load data in **Data** tab.")
+                
                 if st.button("▶  Compute", type="primary", disabled=disabled_btn):
                     st.session_state.xai_result = None  # always clear previous result
                     _FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -1218,15 +1270,15 @@ with tab_xai:
                                     "method": method, "fig": fig_pi, "imp": imp_df,
                                 }
 
-                            elif method == "Learning Curve":
-                                from sklearn.base import clone as _clone
-                                try:
-                                    m_c = _clone(mdl_xai)
-                                except Exception:
-                                    m_c = mdl_xai
-                                fig = xai.learning_curve_plot(m_c, X_xai, y_xai,
-                                                              _model_feat_cols)
-                                st.session_state.xai_result = {"method": method, "fig": fig}
+                            # elif method == "Learning Curve":
+                            #     from sklearn.base import clone as _clone
+                            #     try:
+                            #         m_c = _clone(mdl_xai)
+                            #     except Exception:
+                            #         m_c = mdl_xai
+                            #     fig = xai.learning_curve_plot(m_c, X_xai, y_xai,
+                            #                                   _model_feat_cols)
+                            #     st.session_state.xai_result = {"method": method, "fig": fig}
 
                             elif method == "Decision Tree Visualisation":
                                 _td = st.session_state.get("tree_max_depth", 2)
@@ -1390,6 +1442,7 @@ with tab_inv:
                 c_name.markdown(f"**{feat}**", help=f"Trainingsbereich: [{lo:.3g}, {hi:.3g}]")
 
                 if not include:
+                    fixed_params[feat] = mean
                     continue
 
                 is_var = c_role.toggle("Variabel", value=False, key=f"inv_var_{feat}")

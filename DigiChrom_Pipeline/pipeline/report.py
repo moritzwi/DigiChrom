@@ -292,23 +292,23 @@ def generate_report(
     pdp_cv_reg: Optional[dict] = None,
     inverse_ml_solutions: Optional[pd.DataFrame] = None,
     inverse_ml_target: Optional[float] = None,
-    # ── Klassifikation ───────────────────────────────────────────────────────
-    clf_name: str,
-    clf_model,
-    clf_pre,
-    y_test_cls: pd.Series,
+    # ── Klassifikation (optional) ────────────────────────────────────────────
+    clf_name: Optional[str] = None,
+    clf_model=None,
+    clf_pre=None,
+    y_test_cls: Optional[pd.Series] = None,
     clf_cv: Optional[pd.DataFrame] = None,
     hpo_results_clf: Optional[dict] = None,           # best_f1_clf: {model: f1}
     ensemble_results_clf: Optional[pd.DataFrame] = None,
-    clf_metrics: dict,
-    best_predictor_clf_type: str,
+    clf_metrics: Optional[dict] = None,
+    best_predictor_clf_type: Optional[str] = None,
     metrics_best_pred_clf: Optional[dict] = None,
-    shap_importance_clf: pd.DataFrame,
+    shap_importance_clf: Optional[pd.DataFrame] = None,
     shap_cv_clf: Optional[pd.DataFrame] = None,
     pdp_cv_clf: Optional[dict] = None,
     # ── Gemeinsam ─────────────────────────────────────────────────────────────
-    feature_names: list,
-    median_threshold: float,
+    feature_names: list = None,
+    median_threshold: Optional[float] = None,
     save_path=None,
 ) -> Path:
     """Erstellt einen strukturierten HTML/PDF-Bericht."""
@@ -316,18 +316,23 @@ def generate_report(
     save_path = Path(save_path or (get_config().REPORTS_DIR / "pipeline_report.pdf"))
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
+    has_clf  = clf_model is not None
+
     jetzt    = datetime.datetime.now().strftime("%d.%m.%Y  %H:%M")
     n_total  = n_train + len(X_test)
     bp_reg   = metrics_best_pred_reg or metrics_reg
-    bp_clf   = metrics_best_pred_clf or clf_metrics
+    bp_clf   = (metrics_best_pred_clf or clf_metrics) if has_clf else {}
 
     # Berechnungen
     y_pred_single = np.atleast_1d(final_model.predict(final_pre.transform(X_test.values)))
 
-    from sklearn.metrics import confusion_matrix
-    X_clf_s    = clf_pre.transform(X_test.values)
-    y_pred_cls = clf_model.predict(X_clf_s)
-    cm         = confusion_matrix(y_test_cls, y_pred_cls)
+    if has_clf:
+        from sklearn.metrics import confusion_matrix
+        X_clf_s    = clf_pre.transform(X_test.values)
+        y_pred_cls = clf_model.predict(X_clf_s)
+        cm         = confusion_matrix(y_test_cls, y_pred_cls)
+    else:
+        X_clf_s = y_pred_cls = cm = None
 
     parts: list[str] = []
 
@@ -340,6 +345,24 @@ def generate_report(
     # ═════════════════════════════════════════════════════════════════════════
     # DECKBLATT
     # ═════════════════════════════════════════════════════════════════════════
+    _n_features = len(feature_names) if feature_names else 0
+    if has_clf:
+        _clf_cover_rows = (
+            '<tr><td colspan="4" style="padding-top:20px; font-weight:bold; font-size:10.5pt;'
+            'color:#DD8452;">Bestes Klassifikationsmodell'
+            f' <span class="badge clf">{best_predictor_clf_type}</span></td></tr>\n'
+            f'<tr><td class="lbl">Schwellenwert</td>'
+            f'<td class="val">{median_threshold:.4f} µm</td>'
+            f'<td class="lbl" style="padding-left:28px;">F1-Score</td>'
+            f'<td class="val">{bp_clf.get("f1", float("nan")):.4f}</td></tr>\n'
+            f'<tr><td class="lbl">AUC</td>'
+            f'<td class="val">{bp_clf.get("auc", float("nan")):.4f}</td>'
+            f'<td class="lbl" style="padding-left:28px;">Accuracy</td>'
+            f'<td class="val">{bp_clf.get("accuracy", float("nan")):.4f}</td></tr>'
+        )
+    else:
+        _clf_cover_rows = ""
+
     add(f"""
 <div class="cover">
   <h1>DigiChrom ML Pipeline</h1>
@@ -357,15 +380,14 @@ def generate_report(
       </tr>
       <tr>
         <td class="lbl">Testdaten</td><td class="val">{len(X_test)}</td>
-        <td class="lbl" style="padding-left:28px;">Feature</td><td class="val">{len(feature_names)}</td>
+        <td class="lbl" style="padding-left:28px;">Feature</td><td class="val">{_n_features}</td>
       </tr>
       <tr>
         <td class="lbl">Zielwertbereich Testset</td>
         <td class="val" colspan="3">[{float(y_test.min()):.3f}, {float(y_test.max()):.3f}] µm</td>
       </tr>
 
-      <tr><td colspan="4" style="padding-top:20px; font-weight:bold; font-size:10.5pt;
-              color:#4C72B0;">Bestes Regressionsmodell
+      <tr><td colspan="4" style="padding-top:20px; font-weight:bold; font-size:10.5pt;color:#4C72B0;">Bestes Regressionsmodell
           <span class="badge reg">{best_predictor_reg_type}</span></td></tr>
       <tr>
         <td class="lbl">R²</td>
@@ -379,21 +401,7 @@ def generate_report(
         <td colspan="2"></td>
       </tr>
 
-      <tr><td colspan="4" style="padding-top:20px; font-weight:bold; font-size:10.5pt;
-              color:#DD8452;">Bestes Klassifikationsmodell
-          <span class="badge clf">{best_predictor_clf_type}</span></td></tr>
-      <tr>
-        <td class="lbl">Schwellenwert</td>
-        <td class="val">{median_threshold:.4f} µm</td>
-        <td class="lbl" style="padding-left:28px;">F1-Score</td>
-        <td class="val">{bp_clf.get('f1', float('nan')):.4f}</td>
-      </tr>
-      <tr>
-        <td class="lbl">AUC</td>
-        <td class="val">{bp_clf.get('auc', float('nan')):.4f}</td>
-        <td class="lbl" style="padding-left:28px;">Accuracy</td>
-        <td class="val">{bp_clf.get('accuracy', float('nan')):.4f}</td>
-      </tr>
+      {_clf_cover_rows}
     </tbody>
   </table>
 </div>
@@ -548,72 +556,74 @@ def generate_report(
     else:
         add(_info("Inverse-ML wurde nicht ausgeführt oder Ergebnisse nicht übergeben.", style="dark"))
 
-    pagebreak()
+    if has_clf:
+        pagebreak()
 
     # ═════════════════════════════════════════════════════════════════════════
-    # KLASSIFIKATION
+    # KLASSIFIKATION (nur wenn clf ausgeführt wurde)
     # ═════════════════════════════════════════════════════════════════════════
-    add('<h2 class="clf">Klassifikation — Dünn / Dick (Schwellenwert: '
-        f'{median_threshold:.4f} µm)</h2>')
-    add(_info(
-        "Der binäre Klassifikator entscheidet, ob eine Schicht 'dünn' oder 'dick' ist. "
-        "Schwellenwert = Median der Trainingsschichtdicken. "
-        "Die Pipeline durchläuft dieselbe HPO- und Ensembling-Prozedur wie die Regression.",
-        style="clf",
-    ))
-
-    # ── 1. CV ────────────────────────────────────────────────────────────────
-    add('<h3>1 · Cross-Validation — Test aller Basisklassifikatoren</h3>')
-    if clf_cv is not None and not clf_cv.empty:
-        try:
-            grp = (clf_cv.groupby("model")[["accuracy", "f1", "auc"]]
-                   .agg(["mean", "std"]).round(4))
-            grp.columns = ["Accuracy Mittel", "Accuracy Std",
-                           "F1 Mittel", "F1 Std", "AUC Mittel", "AUC Std"]
-            grp = grp.sort_values("F1 Mittel", ascending=False).reset_index()
-            grp.rename(columns={"model": "Modell"}, inplace=True)
-            add(_df_to_html(grp, cls="t-clf"))
-        except Exception:
-            add('<p style="color:#888;font-size:9pt;">CV-Ergebnisse nicht verfügbar.</p>')
-    else:
-        add('<p style="color:#888;font-size:9pt;">CV-Ergebnisse nicht übergeben.</p>')
-
-    # ── 2. HPO ───────────────────────────────────────────────────────────────
-    add('<h3>2 · Ergebnisse nach Hyperparameter-Optimierung (HPO)</h3>')
-    add(_info(
-        f"Bester F1-Score je Klassifikator aus der HPO. "
-        f"Bestes Einzelmodell: <b>{clf_name}</b>.",
-        style="clf",
-    ))
-    if hpo_results_clf:
-        hpo_df_clf = (pd.DataFrame(
-            [{"Modell": k, "Bester F1 (HPO)": f"{v:.4f}"}
-             for k, v in sorted(hpo_results_clf.items(), key=lambda x: x[1], reverse=True)]
+    if has_clf:
+        add('<h2 class="clf">Klassifikation — Dünn / Dick (Schwellenwert: '
+            f'{median_threshold:.4f} µm)</h2>')
+        add(_info(
+            "Der binäre Klassifikator entscheidet, ob eine Schicht 'dünn' oder 'dick' ist. "
+            "Schwellenwert = Median der Trainingsschichtdicken. "
+            "Die Pipeline durchläuft dieselbe HPO- und Ensembling-Prozedur wie die Regression.",
+            style="clf",
         ))
-        add(_df_to_html(hpo_df_clf, cls="t-clf", winner_row=clf_name, winner_col="Modell"))
-    else:
+
+        # ── 1. CV ────────────────────────────────────────────────────────────
+        add('<h3>1 · Cross-Validation — Test aller Basisklassifikatoren</h3>')
         if clf_cv is not None and not clf_cv.empty:
             try:
-                fb = (clf_cv.groupby("model")[["accuracy", "f1", "auc"]]
-                      .mean().round(4).sort_values("f1", ascending=False).reset_index())
-                fb.rename(columns={"model": "Modell", "accuracy": "Accuracy",
-                                   "f1": "F1", "auc": "AUC"}, inplace=True)
-                add(_df_to_html(fb, cls="t-clf", winner_row=clf_name, winner_col="Modell"))
+                grp = (clf_cv.groupby("model")[["accuracy", "f1", "auc"]]
+                       .agg(["mean", "std"]).round(4))
+                grp.columns = ["Accuracy Mittel", "Accuracy Std",
+                               "F1 Mittel", "F1 Std", "AUC Mittel", "AUC Std"]
+                grp = grp.sort_values("F1 Mittel", ascending=False).reset_index()
+                grp.rename(columns={"model": "Modell"}, inplace=True)
+                add(_df_to_html(grp, cls="t-clf"))
             except Exception:
-                pass
+                add('<p style="color:#888;font-size:9pt;">CV-Ergebnisse nicht verfügbar.</p>')
         else:
-            add('<p style="color:#888;font-size:9pt;">HPO-Ergebnisse nicht übergeben.</p>')
+            add('<p style="color:#888;font-size:9pt;">CV-Ergebnisse nicht übergeben.</p>')
 
-    add(f'<p style="margin-top:10px;font-size:9.5pt;">Testset-Metriken '
-        f'<b>{clf_name}</b> (nach HPO, retrained): '
-        f'F1&nbsp;=&nbsp;<b>{clf_metrics.get("f1", float("nan")):.4f}</b> &nbsp;|&nbsp; '
-        f'AUC&nbsp;=&nbsp;<b>{clf_metrics.get("auc", float("nan")):.4f}</b> &nbsp;|&nbsp; '
-        f'Accuracy&nbsp;=&nbsp;<b>{clf_metrics.get("accuracy", float("nan")):.4f}</b></p>')
+        # ── 2. HPO ───────────────────────────────────────────────────────────
+        add('<h3>2 · Ergebnisse nach Hyperparameter-Optimierung (HPO)</h3>')
+        add(_info(
+            f"Bester F1-Score je Klassifikator aus der HPO. "
+            f"Bestes Einzelmodell: <b>{clf_name}</b>.",
+            style="clf",
+        ))
+        if hpo_results_clf:
+            hpo_df_clf = (pd.DataFrame(
+                [{"Modell": k, "Bester F1 (HPO)": f"{v:.4f}"}
+                 for k, v in sorted(hpo_results_clf.items(), key=lambda x: x[1], reverse=True)]
+            ))
+            add(_df_to_html(hpo_df_clf, cls="t-clf", winner_row=clf_name, winner_col="Modell"))
+        else:
+            if clf_cv is not None and not clf_cv.empty:
+                try:
+                    fb = (clf_cv.groupby("model")[["accuracy", "f1", "auc"]]
+                          .mean().round(4).sort_values("f1", ascending=False).reset_index())
+                    fb.rename(columns={"model": "Modell", "accuracy": "Accuracy",
+                                       "f1": "F1", "auc": "AUC"}, inplace=True)
+                    add(_df_to_html(fb, cls="t-clf", winner_row=clf_name, winner_col="Modell"))
+                except Exception:
+                    pass
+            else:
+                add('<p style="color:#888;font-size:9pt;">HPO-Ergebnisse nicht übergeben.</p>')
 
-    # Konfusionsmatrix + ROC nebeneinander
-    cm_b64  = _b64(_fig_confusion(cm, clf_name))
-    roc_b64 = _b64(_fig_roc(clf_model, X_clf_s, y_test_cls.values, clf_name))
-    add(f"""
+        add(f'<p style="margin-top:10px;font-size:9.5pt;">Testset-Metriken '
+            f'<b>{clf_name}</b> (nach HPO, retrained): '
+            f'F1&nbsp;=&nbsp;<b>{clf_metrics.get("f1", float("nan")):.4f}</b> &nbsp;|&nbsp; '
+            f'AUC&nbsp;=&nbsp;<b>{clf_metrics.get("auc", float("nan")):.4f}</b> &nbsp;|&nbsp; '
+            f'Accuracy&nbsp;=&nbsp;<b>{clf_metrics.get("accuracy", float("nan")):.4f}</b></p>')
+
+        # Konfusionsmatrix + ROC nebeneinander
+        cm_b64  = _b64(_fig_confusion(cm, clf_name))
+        roc_b64 = _b64(_fig_roc(clf_model, X_clf_s, y_test_cls.values, clf_name))
+        add(f"""
 <table style="border:none; width:100%; margin:10px 0;">
   <tr>
     <td style="border:none; width:50%; text-align:center; vertical-align:top;">
@@ -627,32 +637,32 @@ def generate_report(
   </tr>
 </table>""")
 
-    # ── 3. Ensembling ────────────────────────────────────────────────────────
-    add('<h3>3 · Ensembling — Alle Kombinationen</h3>')
-    add(_info(
-        "Averaging-, Weighted- und Stacking-Ensembles der drei stärksten Klassifikatoren. "
-        "Grün markiert: bestes Ensemble (nach F1).",
-        style="clf",
-    ))
-    if ensemble_results_clf is not None and not ensemble_results_clf.empty:
-        ens_clf_show = ensemble_results_clf.copy().round(4)
-        ens_clf_show.columns = [c.lower() for c in ens_clf_show.columns]
-        winner_ens_clf = ens_clf_show.loc[ens_clf_show["f1"].idxmax(), "ensemble"] \
-            if "ensemble" in ens_clf_show.columns and "f1" in ens_clf_show.columns else None
-        ens_clf_show.columns = [c.capitalize() for c in ens_clf_show.columns]
-        add(_df_to_html(ens_clf_show, cls="t-clf",
-                        winner_row=str(winner_ens_clf).capitalize() if winner_ens_clf else None,
-                        winner_col="Ensemble" if "Ensemble" in ens_clf_show.columns else None))
-    else:
-        add('<p style="color:#888;font-size:9pt;">Ensemble-Ergebnisse nicht übergeben.</p>')
+        # ── 3. Ensembling ─────────────────────────────────────────────────────
+        add('<h3>3 · Ensembling — Alle Kombinationen</h3>')
+        add(_info(
+            "Averaging-, Weighted- und Stacking-Ensembles der drei stärksten Klassifikatoren. "
+            "Grün markiert: bestes Ensemble (nach F1).",
+            style="clf",
+        ))
+        if ensemble_results_clf is not None and not ensemble_results_clf.empty:
+            ens_clf_show = ensemble_results_clf.copy().round(4)
+            ens_clf_show.columns = [c.lower() for c in ens_clf_show.columns]
+            winner_ens_clf = ens_clf_show.loc[ens_clf_show["f1"].idxmax(), "ensemble"] \
+                if "ensemble" in ens_clf_show.columns and "f1" in ens_clf_show.columns else None
+            ens_clf_show.columns = [c.capitalize() for c in ens_clf_show.columns]
+            add(_df_to_html(ens_clf_show, cls="t-clf",
+                            winner_row=str(winner_ens_clf).capitalize() if winner_ens_clf else None,
+                            winner_col="Ensemble" if "Ensemble" in ens_clf_show.columns else None))
+        else:
+            add('<p style="color:#888;font-size:9pt;">Ensemble-Ergebnisse nicht übergeben.</p>')
 
-    # ── 4. Finaler Klassifikator ─────────────────────────────────────────────
-    add('<h3>4 · Finaler Klassifikator</h3>')
-    add(_info(
-        f"Der finale Klassifikator ist <b>{best_predictor_clf_type}</b>.",
-        style="clf",
-    ))
-    add(f"""
+        # ── 4. Finaler Klassifikator ──────────────────────────────────────────
+        add('<h3>4 · Finaler Klassifikator</h3>')
+        add(_info(
+            f"Der finale Klassifikator ist <b>{best_predictor_clf_type}</b>.",
+            style="clf",
+        ))
+        add(f"""
 <table class="t-clf" style="width:auto;">
   <thead><tr><th>Kennzahl</th><th>Wert</th></tr></thead>
   <tbody>
@@ -664,52 +674,47 @@ def generate_report(
 </table>
 """)
 
-    # ── 5. SHAP & PDP ────────────────────────────────────────────────────────
-    add('<h3>5 · Featureswichtigkeit (SHAP) &amp; PDP</h3>')
-    _shap_who_clf = (
-        f"SHAP auf Testset: <b>{best_predictor_clf_type}</b>."
-        + (f" Faltbasierte SHAP: <b>{clf_name}</b> (bestes Einzelmodell)."
-           if shap_cv_clf is not None else "")
-        + (f" PDP: <b>{clf_name}</b> über Cross-Validation-Folds."
-           if pdp_cv_clf else "")
-    )
-    add(_info(
-        "SHAP zeigt, welche Parameter die Dünn/Dick-Entscheidung am stärksten beeinflussen. "
-        "PDP-Werte nahe 1,0 bedeuten: Modell erwartet Dickschicht; nahe 0,0: Dünnschicht.\n\n"
-        + _shap_who_clf,
-        style="clf",
-    ))
-    add(_img(
-        _fig_shap(shap_importance_clf,
-                  title=f"Featurewichtigkeit (SHAP) — {clf_name}",
-                  color="#DD8452", shap_cv=shap_cv_clf),
-        caption="Mittlerer |SHAP-Wert| je Feature — Klassifikation",
-    ))
-    # if pdp_cv_clf:
-    #     add(_img(
-    #         _fig_pdp(pdp_cv_clf, clf_name, task="classification"),
-    #         caption="PDP mit Unsicherheitsband (±1 Std.-Abw.) — Klassifikation",
-    #     ))
-    if pdp_cv_reg:
-        for feat in pdp_cv_reg.keys():
-            add(_img(
-                _fig_pdp_single(feat, pdp_cv_reg[feat], model_name_reg, task="classification")
-            ))
+        # ── 5. SHAP & PDP ─────────────────────────────────────────────────────
+        add('<h3>5 · Featureswichtigkeit (SHAP) &amp; PDP</h3>')
+        _shap_who_clf = (
+            f"SHAP auf Testset: <b>{best_predictor_clf_type}</b>."
+            + (f" Faltbasierte SHAP: <b>{clf_name}</b> (bestes Einzelmodell)."
+               if shap_cv_clf is not None else "")
+            + (f" PDP: <b>{clf_name}</b> über Cross-Validation-Folds."
+               if pdp_cv_clf else "")
+        )
+        add(_info(
+            "SHAP zeigt, welche Parameter die Dünn/Dick-Entscheidung am stärksten beeinflussen. "
+            "PDP-Werte nahe 1,0 bedeuten: Modell erwartet Dickschicht; nahe 0,0: Dünnschicht.\n\n"
+            + _shap_who_clf,
+            style="clf",
+        ))
+        add(_img(
+            _fig_shap(shap_importance_clf,
+                      title=f"Featurewichtigkeit (SHAP) — {clf_name}",
+                      color="#DD8452", shap_cv=shap_cv_clf),
+            caption="Mittlerer |SHAP-Wert| je Feature — Klassifikation",
+        ))
+        if pdp_cv_reg:
+            for feat in pdp_cv_reg.keys():
+                add(_img(
+                    _fig_pdp_single(feat, pdp_cv_reg[feat], model_name_reg, task="classification")
+                ))
 
-    # ── 6. Inverse ML ────────────────────────────────────────────────────────
-    add('<h3>6 · Inverse ML — Parametervorschläge</h3>')
-    add(_info(
-        "Inverse ML läuft auf dem Regressionsmodell — nicht auf dem Klassifikator. "
-        "Die Parametervorschläge basieren auf dem finalen Regressorprädiktor.",
-        style="clf",
-    ))
-    if inverse_ml_solutions is not None and not inverse_ml_solutions.empty:
-        target_str = f"{inverse_ml_target:.3f} µm" if inverse_ml_target else "—"
-        add(f'<p style="font-size:9.5pt;">Zieldicke: <b>{target_str}</b> &nbsp;|&nbsp; '
-            f'Modell: <b>{best_predictor_reg_type}</b></p>')
-        add(_df_to_html(inverse_ml_solutions.round(4), cls="t-clf"))
-    else:
-        add(_info("Inverse-ML wurde nicht ausgeführt oder Ergebnisse nicht übergeben.", style="dark"))
+        # ── 6. Inverse ML ─────────────────────────────────────────────────────
+        add('<h3>6 · Inverse ML — Parametervorschläge</h3>')
+        add(_info(
+            "Inverse ML läuft auf dem Regressionsmodell — nicht auf dem Klassifikator. "
+            "Die Parametervorschläge basieren auf dem finalen Regressorprädiktor.",
+            style="clf",
+        ))
+        if inverse_ml_solutions is not None and not inverse_ml_solutions.empty:
+            target_str = f"{inverse_ml_target:.3f} µm" if inverse_ml_target else "—"
+            add(f'<p style="font-size:9.5pt;">Zieldicke: <b>{target_str}</b> &nbsp;|&nbsp; '
+                f'Modell: <b>{best_predictor_reg_type}</b></p>')
+            add(_df_to_html(inverse_ml_solutions.round(4), cls="t-clf"))
+        else:
+            add(_info("Inverse-ML wurde nicht ausgeführt oder Ergebnisse nicht übergeben.", style="dark"))
 
     # ── HTML zusammenbauen ────────────────────────────────────────────────────
     html = f"""<!DOCTYPE html>
