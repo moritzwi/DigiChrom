@@ -101,13 +101,14 @@ coll = COLLECT(
     name="DigiChrom",
 )
 
-app = BUNDLE(
-    coll,
-    name="DigiChrom.app",
-    icon=None,              # add .icns path here
-    bundle_identifier="de.tum.digichrom",
-    info_plist={
-        "NSHighResolutionCapable": True,
-        "CFBundleShortVersionString": "1.0.0",
-    },
-)
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="DigiChrom.app",
+        icon=None,              # add .icns path here
+        bundle_identifier="de.tum.digichrom",
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "CFBundleShortVersionString": "1.0.0",
+        },
+    )

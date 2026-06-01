@@ -1,0 +1,42 @@
+name: Build DigiChrom
+
+on:
+  workflow_dispatch:        # manuell auslösen via GitHub UI
+  push:
+    tags: ['v*']            # oder automatisch bei git tag v1.0.0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: DigiChrom-Mac
+            dist_path: dist/DigiChrom.app
+          - os: windows-latest
+            artifact: DigiChrom-Windows
+            dist_path: dist/DigiChrom
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller DigiChrom.spec --noconfirm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.dist_path }}
+          retention-days: 30

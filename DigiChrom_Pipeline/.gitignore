@@ -59,3 +59,7 @@ optuna.log
 /profiles
 /models
 /app
+
+/_ARCHIVE_DigiChrom_paper_notebook.ipynb
+/?_.ipynb
+/test_owl.ipynb
